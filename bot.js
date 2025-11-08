@@ -16,7 +16,7 @@ console.log("✅ Connected to PostgreSQL via", (DATABASE_URL || "").split("@").p
 
 const pool = new Pool({
   connectionString: DATABASE_URL,
-  ssl: process.env.PGSSLMODE ? { rejectUnauthorized: false } : false
+  ssl: { rejectUnauthorized: false }
 });
 
 async function q(sql, params = []) {
