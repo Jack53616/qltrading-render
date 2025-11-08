@@ -17,7 +17,6 @@ console.log("🟢 Starting QL Trading AI Server...", startedAt);
 console.log("📦 DATABASE_URL =", process.env.DATABASE_URL ? "loaded" : "❌ missing");
 console.log("🤖 BOT_TOKEN =", process.env.BOT_TOKEN ? "loaded" : "❌ missing");
 
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -78,7 +77,7 @@ CREATE TABLE IF NOT EXISTS keys (
 CREATE TABLE IF NOT EXISTS ops (
   id SERIAL PRIMARY KEY,
   user_id INT REFERENCES users(id) ON DELETE CASCADE,
-  type TEXT,            -- admin | pnl | withdraw | deposit | system
+  type TEXT,
   amount NUMERIC(18,2) DEFAULT 0,
   note TEXT,
   created_at TIMESTAMP DEFAULT NOW()
@@ -88,10 +87,10 @@ CREATE TABLE IF NOT EXISTS trades (
   id SERIAL PRIMARY KEY,
   user_id INT REFERENCES users(id) ON DELETE CASCADE,
   symbol TEXT,
-  status TEXT DEFAULT 'open',  -- open / closed
+  status TEXT DEFAULT 'open',
   pnl NUMERIC(18,2) DEFAULT 0,
-  sl NUMERIC(18,2),            -- stop loss
-  tp NUMERIC(18,2),            -- take profit
+  sl NUMERIC(18,2),
+  tp NUMERIC(18,2),
   opened_at TIMESTAMP DEFAULT NOW(),
   closed_at TIMESTAMP
 );
@@ -100,9 +99,9 @@ CREATE TABLE IF NOT EXISTS requests (
   id SERIAL PRIMARY KEY,
   user_id INT REFERENCES users(id) ON DELETE CASCADE,
   amount NUMERIC(18,2) NOT NULL,
-  method TEXT,           -- usdt_trc20 | usdt_erc20 | btc | eth
-  addr TEXT,             -- العنوان المحفوظ للسحب
-  status TEXT DEFAULT 'pending', -- pending/approved/rejected/canceled
+  method TEXT,
+  addr TEXT,
+  status TEXT DEFAULT 'pending',
   created_at TIMESTAMP DEFAULT NOW(),
   updated_at TIMESTAMP
 );
@@ -110,7 +109,7 @@ CREATE TABLE IF NOT EXISTS requests (
 CREATE TABLE IF NOT EXISTS daily_targets (
   id SERIAL PRIMARY KEY,
   user_id INT REFERENCES users(id) ON DELETE CASCADE,
-  target NUMERIC(18,2) NOT NULL,  -- موجب ربح، سالب خسارة
+  target NUMERIC(18,2) NOT NULL,
   symbol TEXT DEFAULT 'XAUUSD',
   active BOOLEAN DEFAULT TRUE,
   created_at TIMESTAMP DEFAULT NOW()
@@ -129,7 +128,7 @@ app.post("/api/admin/migrate", async (req, res) => {
   }
 });
 
-// ---------- AUTH (Token بسيط للميني آب) ----------
+// ---------- AUTH ----------
 app.post("/api/token", (req, res) => {
   const { tg_id } = req.body || {};
   if (!tg_id) return res.json({ ok: false, error: "missing tg_id" });
@@ -140,7 +139,6 @@ app.post("/api/token", (req, res) => {
 // ---------- SUBSCRIBE / ACTIVATE ----------
 app.post("/api/activate", async (req, res) => {
   console.log("🔑 Activation request:", req?.body?.key, req?.body?.tg_id);
-  try {
   try {
     const { key, tg_id, name = "", email = "" } = req.body || {};
     if (!key || !tg_id) return res.json({ ok: false, error: "missing" });
@@ -158,7 +156,9 @@ app.post("/api/activate", async (req, res) => {
 
     await q(`DELETE FROM keys WHERE key_code=$1`, [key]);
     res.json({ ok: true, user: u });
-  } catch (e) { res.json({ ok: false, error: e.message }); }
+  } catch (e) {
+    res.json({ ok: false, error: e.message });
+  }
 });
 
 // ---------- USER ----------
@@ -167,22 +167,24 @@ app.get("/api/user/:tg", async (req, res) => {
     const u = await q(`SELECT * FROM users WHERE tg_id=$1`, [req.params.tg]).then(r => r.rows[0]);
     if (!u) return res.json({ ok: false });
     res.json({ ok: true, user: u });
-  } catch (e) { res.json({ ok: false, error: e.message }); }
+  } catch (e) {
+    res.json({ ok: false, error: e.message });
+  }
 });
 
-// حفظ/تحديث عنوان السحب لطريقة معينة
+// ---------- WITHDRAW ----------
 app.post("/api/withdraw/method", async (req, res) => {
   try {
     const { tg_id, method, addr } = req.body || {};
     const u = await q(`SELECT * FROM users WHERE tg_id=$1`, [tg_id]).then(r => r.rows[0]);
     if (!u) return res.json({ ok: false, error: "User not found" });
-    // نحفظها كـ op note بسيطة
     await q(`INSERT INTO ops (user_id, type, amount, note) VALUES ($1,'system',0,$2)`, [u.id, `withdraw_addr:${method}:${addr}`]);
     res.json({ ok: true });
-  } catch (e) { res.json({ ok: false, error: e.message }); }
+  } catch (e) {
+    res.json({ ok: false, error: e.message });
+  }
 });
 
-// طلب سحب
 app.post("/api/withdraw", async (req, res) => {
   try {
     const { tg_id, amount, method } = req.body || {};
@@ -191,15 +193,18 @@ app.post("/api/withdraw", async (req, res) => {
     if (Number(u.balance) < Number(amount)) return res.json({ ok: false, error: "Insufficient balance" });
 
     await q(`UPDATE users SET balance = balance - $1 WHERE id=$2`, [amount, u.id]);
-    const r0 = await q(`INSERT INTO requests (user_id, amount, method, status) VALUES ($1,$2,$3,'pending') RETURNING *`,
-      [u.id, amount, method]).then(r => r.rows[0]);
+    const r0 = await q(
+      `INSERT INTO requests (user_id, amount, method, status) VALUES ($1,$2,$3,'pending') RETURNING *`,
+      [u.id, amount, method]
+    ).then(r => r.rows[0]);
     await q(`INSERT INTO ops (user_id, type, amount, note) VALUES ($1,'withdraw',$2,$3)`,
       [u.id, amount, `withdraw_request:${method}`]);
     res.json({ ok: true, request: r0 });
-  } catch (e) { res.json({ ok: false, error: e.message }); }
+  } catch (e) {
+    res.json({ ok: false, error: e.message });
+  }
 });
 
-// إلغاء طلب السحب قبل الموافقة
 app.post("/api/withdraw/cancel", async (req, res) => {
   try {
     const { tg_id, id } = req.body || {};
@@ -212,27 +217,9 @@ app.post("/api/withdraw/cancel", async (req, res) => {
     await q(`UPDATE requests SET status='canceled', updated_at=NOW() WHERE id=$1`, [id]);
     await q(`UPDATE users SET balance = balance + $1 WHERE id=$2`, [r0.amount, u.id]);
     res.json({ ok: true });
-  } catch (e) { res.json({ ok: false, error: e.message }); }
-});
-
-// قائمة الطلبات
-app.get("/api/requests/:tg", async (req, res) => {
-  try {
-    const u = await q(`SELECT id FROM users WHERE tg_id=$1`, [req.params.tg]).then(r => r.rows[0]);
-    if (!u) return res.json({ ok: false, list: [] });
-    const list = await q(`SELECT * FROM requests WHERE user_id=$1 ORDER BY id DESC`, [u.id]).then(r => r.rows);
-    res.json({ ok: true, list });
-  } catch (e) { res.json({ ok: false, error: e.message }); }
-});
-
-// عمليات المستخدم
-app.get("/api/ops/:tg", async (req, res) => {
-  try {
-    const u = await q(`SELECT id FROM users WHERE tg_id=$1`, [req.params.tg]).then(r => r.rows[0]);
-    if (!u) return res.json({ ok: false, list: [] });
-    const list = await q(`SELECT * FROM ops WHERE user_id=$1 ORDER BY id DESC LIMIT 30`, [u.id]).then(r => r.rows);
-    res.json({ ok: true, list });
-  } catch (e) { res.json({ ok: false, error: e.message }); }
+  } catch (e) {
+    res.json({ ok: false, error: e.message });
+  }
 });
 
 // ---------- MARKETS ----------
@@ -241,8 +228,8 @@ app.get("/api/markets", async (_req, res) => {
     const pairs = [
       { code: "BTCUSDT", type: "binance" },
       { code: "ETHUSDT", type: "binance" },
-      { code: "XAUUSD",  type: "yahoo", y: "XAUUSD=X" },
-      { code: "XAGUSD",  type: "yahoo", y: "XAGUSD=X" }
+      { code: "XAUUSD", type: "yahoo", y: "XAUUSD=X" },
+      { code: "XAGUSD", type: "yahoo", y: "XAGUSD=X" }
     ];
     const out = {};
     for (const p of pairs) {
@@ -258,14 +245,15 @@ app.get("/api/markets", async (_req, res) => {
       }
     }
     res.json({ ok: true, data: out });
-  } catch (e) { res.json({ ok: false, error: e.message }); }
+  } catch (e) {
+    res.json({ ok: false, error: e.message });
+  }
 });
 
-// ---------- STATIC (SPA) ----------
+// ---------- STATIC ----------
 app.get("*", (_req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
 });
-
 
 // ===== Telegram Webhook support =====
 const WEBHOOK_URL = process.env.WEBHOOK_URL || null;
@@ -302,4 +290,3 @@ app.post("/webhook/:token", async (req, res) => {
 app.listen(PORT, () => {
   console.log(`🟢 QL Trading AI server running on port ${PORT}`);
 });
-
