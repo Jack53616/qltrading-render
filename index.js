@@ -35,7 +35,7 @@ if (!DATABASE_URL) {
 const app = express();
 app.use(cors());
 app.use(bodyParser.json());
-app.use(express.static(__dirname)); // يخدم index.html و app.js و style.css والأصول
+app.use(express.static(__dirname));
 
 const pool = new Pool({
   connectionString: DATABASE_URL,
@@ -142,8 +142,18 @@ app.post("/api/activate", async (req, res) => {
   try {
     const { key, tg_id, name = "", email = "" } = req.body || {};
     if (!key || !tg_id) return res.json({ ok: false, error: "missing" });
+
+    // 🔍 تحقق من وجود المفتاح
     const k = await q(`SELECT * FROM keys WHERE key_code=$1`, [key]).then(r => r.rows[0]);
-    if (!k) return res.json({ ok: false, error: "invalid_key" });
+
+    // ✅ تحسين الرسائل: نعرف السبب
+    if (!k) {
+      const used = await q(`SELECT 1 FROM ops WHERE note LIKE $1 LIMIT 1`, [`%${key}%`]);
+      if (used.rowCount > 0) {
+        return res.json({ ok: false, error: "used_key" });
+      }
+      return res.json({ ok: false, error: "invalid_key" });
+    }
 
     const u = await q(
       `INSERT INTO users (tg_id, name, email, sub_expires, level)
@@ -154,7 +164,9 @@ app.post("/api/activate", async (req, res) => {
       [tg_id, name, email, k.days]
     ).then(r => r.rows[0]);
 
+    // نحذف المفتاح بعد التفعيل (مفتاح لمرة واحدة)
     await q(`DELETE FROM keys WHERE key_code=$1`, [key]);
+    await q(`INSERT INTO ops (user_id, type, amount, note) VALUES ($1,'system',0,$2)`, [u.id, `activation:${key}`]);
     res.json({ ok: true, user: u });
   } catch (e) {
     res.json({ ok: false, error: e.message });
@@ -193,33 +205,12 @@ app.post("/api/withdraw", async (req, res) => {
     if (Number(u.balance) < Number(amount)) return res.json({ ok: false, error: "Insufficient balance" });
 
     await q(`UPDATE users SET balance = balance - $1 WHERE id=$2`, [amount, u.id]);
-    const r0 = await q(
-      `INSERT INTO requests (user_id, amount, method, status) VALUES ($1,$2,$3,'pending') RETURNING *`,
-      [u.id, amount, method]
-    ).then(r => r.rows[0]);
+    const r0 = await q(`INSERT INTO requests (user_id, amount, method, status) VALUES ($1,$2,$3,'pending') RETURNING *`,
+      [u.id, amount, method]).then(r => r.rows[0]);
     await q(`INSERT INTO ops (user_id, type, amount, note) VALUES ($1,'withdraw',$2,$3)`,
       [u.id, amount, `withdraw_request:${method}`]);
     res.json({ ok: true, request: r0 });
-  } catch (e) {
-    res.json({ ok: false, error: e.message });
-  }
-});
-
-app.post("/api/withdraw/cancel", async (req, res) => {
-  try {
-    const { tg_id, id } = req.body || {};
-    const u = await q(`SELECT * FROM users WHERE tg_id=$1`, [tg_id]).then(r => r.rows[0]);
-    if (!u) return res.json({ ok: false, error: "User not found" });
-    const r0 = await q(`SELECT * FROM requests WHERE id=$1 AND user_id=$2`, [id, u.id]).then(r => r.rows[0]);
-    if (!r0) return res.json({ ok: false, error: "not_found" });
-    if (r0.status !== "pending") return res.json({ ok: false, error: "cannot_cancel" });
-
-    await q(`UPDATE requests SET status='canceled', updated_at=NOW() WHERE id=$1`, [id]);
-    await q(`UPDATE users SET balance = balance + $1 WHERE id=$2`, [r0.amount, u.id]);
-    res.json({ ok: true });
-  } catch (e) {
-    res.json({ ok: false, error: e.message });
-  }
+  } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 
 // ---------- MARKETS ----------
@@ -228,8 +219,8 @@ app.get("/api/markets", async (_req, res) => {
     const pairs = [
       { code: "BTCUSDT", type: "binance" },
       { code: "ETHUSDT", type: "binance" },
-      { code: "XAUUSD", type: "yahoo", y: "XAUUSD=X" },
-      { code: "XAGUSD", type: "yahoo", y: "XAGUSD=X" }
+      { code: "XAUUSD",  type: "yahoo", y: "XAUUSD=X" },
+      { code: "XAGUSD",  type: "yahoo", y: "XAGUSD=X" }
     ];
     const out = {};
     for (const p of pairs) {
@@ -245,9 +236,7 @@ app.get("/api/markets", async (_req, res) => {
       }
     }
     res.json({ ok: true, data: out });
-  } catch (e) {
-    res.json({ ok: false, error: e.message });
-  }
+  } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 
 // ---------- STATIC ----------
@@ -275,9 +264,7 @@ const WEBHOOK_URL = process.env.WEBHOOK_URL || null;
 app.post("/webhook/:token", async (req, res) => {
   try {
     const token = req.params.token;
-    if (token !== process.env.BOT_TOKEN) {
-      return res.sendStatus(403);
-    }
+    if (token !== process.env.BOT_TOKEN) return res.sendStatus(403);
     console.log("📩 Webhook request received from Telegram");
     await bot.processUpdate(req.body);
     res.sendStatus(200);
