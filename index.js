@@ -345,6 +345,11 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'index.html'));
 });
 
+
+// Load bot inside same service
+require('./bot.js');
+
+
 app.listen(PORT, ()=>{
   console.log('Server running on port '+PORT);
 });
