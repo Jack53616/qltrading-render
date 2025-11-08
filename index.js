@@ -1,188 +1,263 @@
-require('dotenv').config();
-const express = require('express');
-const path = require('path');
-const cors = require('cors');
-const fetch = (url,...args)=> import('node-fetch').then(({default: f})=> f(url,...args));
-const { Pool } = require('pg');
+// QL Trading AI v2.1 FINAL — Server/API
+import express from "express";
+import path from "path";
+import cors from "cors";
+import bodyParser from "body-parser";
+import { fileURLToPath } from "url";
+import dotenv from "dotenv";
+import fetch from "node-fetch";
+import jwt from "jsonwebtoken";
+import pkg from "pg";
+const { Pool } = pkg;
+
+dotenv.config();
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const {
+  DATABASE_URL,
+  PORT = 10000,
+  ADMIN_TOKEN = "ql_admin_2025",
+  JWT_SECRET = "ql_secret_2025"
+} = process.env;
+
+if (!DATABASE_URL) {
+  console.error("DATABASE_URL missing");
+  process.exit(1);
+}
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(bodyParser.json());
+app.use(express.static(__dirname)); // يخدم index.html و app.js و style.css والأصول
 
-const PORT = process.env.PORT || 10000;
-const ADMIN_TOKEN = process.env.ADMIN_TOKEN || 'ql_admin_2025';
-const DATABASE_URL = process.env.DATABASE_URL;
-if(!DATABASE_URL){ console.error('DATABASE_URL missing'); process.exit(1); }
-
-const pool = new Pool({ connectionString: DATABASE_URL });
-async function q(query, params){ const c = await pool.connect(); try{ const r = await c.query(query, params); return r; } finally { c.release(); } }
-
-// --- Admin migrate
-app.post('/api/admin/migrate', async (req,res)=>{
-  try{
-    if(req.headers['x-admin-token'] !== ADMIN_TOKEN) return res.status(403).json({ ok:false, error:'forbidden' });
-    const sql = require('fs').readFileSync(path.join(__dirname,'db.sql'),'utf-8');
-    await q(sql);
-    res.json({ ok:true });
-  }catch(e){ res.status(500).json({ ok:false, error:e.message }); }
+const pool = new Pool({
+  connectionString: DATABASE_URL,
+  ssl: process.env.PGSSLMODE ? { rejectUnauthorized: false } : false
 });
 
-// --- Auth: activate key
-app.post('/api/auth/activateKey', async (req,res)=>{
-  try{
-    const tgId = Number(req.headers['x-ql-tg']);
-    const { key } = req.body;
-    if(!tgId) return res.json({ ok:false, error:'no tg id' });
-    const k = await q(`SELECT * FROM keys WHERE key_code=$1`, [key]).then(r=>r.rows[0]);
-    if(!k) return res.json({ ok:false, error:'invalid key' });
-    if(k.used_at) return res.json({ ok:false, error:'used key' });
-    const u = await q(`INSERT INTO users (tg_id) VALUES ($1) ON CONFLICT (tg_id) DO UPDATE SET tg_id=EXCLUDED.tg_id RETURNING *`, [tgId]).then(r=>r.rows[0]);
-    await q(`UPDATE keys SET used_by=$1, used_at=now() WHERE id=$2`, [u.id, k.id]);
-    // sub 30 days default
-    await q(`UPDATE users SET sub_until = now() + ($1 || ' days')::interval WHERE id=$2`, [k.days||30, u.id]);
-    res.json({ ok:true });
-  }catch(e){ res.status(500).json({ ok:false, error:e.message }); }
+async function q(sql, params = []) {
+  const c = await pool.connect();
+  try {
+    const r = await c.query(sql, params);
+    return r;
+  } finally {
+    c.release();
+  }
+}
+
+// ---------- MIGRATIONS ----------
+const DDL = `
+CREATE TABLE IF NOT EXISTS users (
+  id SERIAL PRIMARY KEY,
+  tg_id BIGINT UNIQUE,
+  name TEXT,
+  email TEXT,
+  balance NUMERIC(18,2) DEFAULT 0,
+  wins NUMERIC(18,2) DEFAULT 0,
+  losses NUMERIC(18,2) DEFAULT 0,
+  level TEXT DEFAULT 'Bronze',
+  sub_expires TIMESTAMP,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS keys (
+  id SERIAL PRIMARY KEY,
+  key_code TEXT UNIQUE NOT NULL,
+  days INT NOT NULL DEFAULT 30,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS ops (
+  id SERIAL PRIMARY KEY,
+  user_id INT REFERENCES users(id) ON DELETE CASCADE,
+  type TEXT,            -- admin | pnl | withdraw | deposit | system
+  amount NUMERIC(18,2) DEFAULT 0,
+  note TEXT,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS trades (
+  id SERIAL PRIMARY KEY,
+  user_id INT REFERENCES users(id) ON DELETE CASCADE,
+  symbol TEXT,
+  status TEXT DEFAULT 'open',  -- open / closed
+  pnl NUMERIC(18,2) DEFAULT 0,
+  sl NUMERIC(18,2),            -- stop loss
+  tp NUMERIC(18,2),            -- take profit
+  opened_at TIMESTAMP DEFAULT NOW(),
+  closed_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS requests (
+  id SERIAL PRIMARY KEY,
+  user_id INT REFERENCES users(id) ON DELETE CASCADE,
+  amount NUMERIC(18,2) NOT NULL,
+  method TEXT,           -- usdt_trc20 | usdt_erc20 | btc | eth
+  addr TEXT,             -- العنوان المحفوظ للسحب
+  status TEXT DEFAULT 'pending', -- pending/approved/rejected/canceled
+  created_at TIMESTAMP DEFAULT NOW(),
+  updated_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS daily_targets (
+  id SERIAL PRIMARY KEY,
+  user_id INT REFERENCES users(id) ON DELETE CASCADE,
+  target NUMERIC(18,2) NOT NULL,  -- موجب ربح، سالب خسارة
+  symbol TEXT DEFAULT 'XAUUSD',
+  active BOOLEAN DEFAULT TRUE,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+`;
+
+app.post("/api/admin/migrate", async (req, res) => {
+  if (req.headers["x-admin-token"] !== ADMIN_TOKEN) {
+    return res.status(403).json({ ok: false, error: "forbidden" });
+  }
+  try {
+    await q(DDL);
+    return res.json({ ok: true, msg: "migrated" });
+  } catch (e) {
+    return res.json({ ok: false, error: e.message });
+  }
 });
 
-// --- User info
-app.get('/api/user/me', async (req,res)=>{
-  try{
-    const tgId = Number(req.headers['x-ql-tg']);
-    const u = await q(`SELECT * FROM users WHERE tg_id=$1`, [tgId]).then(r=>r.rows[0]);
-    if(!u) return res.json({ ok:true, user:{ balance:0 }, ops:[], requests:[], trades:[] });
-    const ops = await q(`SELECT * FROM ops WHERE user_id=$1 ORDER BY id DESC LIMIT 20`, [u.id]).then(r=>r.rows);
-    const reqs = await q(`SELECT * FROM requests WHERE user_id=$1 ORDER BY id DESC LIMIT 20`, [u.id]).then(r=>r.rows);
-    const trs = await q(`SELECT id,symbol,status,pnl,stop_loss,take_profit FROM trades WHERE user_id=$1 ORDER BY id DESC LIMIT 20`, [u.id]).then(r=>r.rows);
-    res.json({ ok:true, user:u, ops, requests:reqs, trades:trs });
-  }catch(e){ res.status(500).json({ ok:false, error:e.message }); }
+// ---------- AUTH (Token بسيط للميني آب) ----------
+app.post("/api/token", (req, res) => {
+  const { tg_id } = req.body || {};
+  if (!tg_id) return res.json({ ok: false, error: "missing tg_id" });
+  const token = jwt.sign({ tg_id }, JWT_SECRET, { expiresIn: "30d" });
+  res.json({ ok: true, token });
 });
 
-app.post('/api/user/lang', async (req,res)=>{
-  try{
-    const tgId = Number(req.headers['x-ql-tg']); const { lang }= req.body;
-    if(!tgId) return res.json({ ok:false });
-    await q(`UPDATE users SET lang=$1 WHERE tg_id=$2`, [lang, tgId]);
-    res.json({ ok:true });
-  }catch(e){ res.status(500).json({ ok:false }); }
+// ---------- SUBSCRIBE / ACTIVATE ----------
+app.post("/api/activate", async (req, res) => {
+  try {
+    const { key, tg_id, name = "", email = "" } = req.body || {};
+    if (!key || !tg_id) return res.json({ ok: false, error: "missing" });
+    const k = await q(`SELECT * FROM keys WHERE key_code=$1`, [key]).then(r => r.rows[0]);
+    if (!k) return res.json({ ok: false, error: "invalid_key" });
+
+    const u = await q(
+      `INSERT INTO users (tg_id, name, email, sub_expires, level)
+       VALUES ($1,$2,$3, NOW() + ($4 || ' days')::interval, 'Bronze')
+       ON CONFLICT (tg_id) DO UPDATE
+       SET sub_expires = NOW() + ($4 || ' days')::interval
+       RETURNING *`,
+      [tg_id, name, email, k.days]
+    ).then(r => r.rows[0]);
+
+    await q(`DELETE FROM keys WHERE key_code=$1`, [key]);
+    res.json({ ok: true, user: u });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 
-// --- Withdraw
-app.post('/api/withdraw/request', async (req,res)=>{
-  try{
-    const tgId = Number(req.headers['x-ql-tg']); const { method, address, amount } = req.body;
-    const u = await q(`SELECT id FROM users WHERE tg_id=$1`, [tgId]).then(r=>r.rows[0]);
-    if(!u) return res.json({ ok:false });
-    await q(`INSERT INTO requests (user_id,method,address,amount,status) VALUES ($1,$2,$3,($4)::numeric,'pending')`, [u.id, method, address, amount]);
-    await q(`INSERT INTO ops (user_id,type,amount,note) VALUES ($1,'withdraw',($2)::numeric,'Withdrawal requested')`, [u.id, -Math.abs(amount)]);
-    res.json({ ok:true });
-  }catch(e){ res.status(500).json({ ok:false, error:e.message }); }
+// ---------- USER ----------
+app.get("/api/user/:tg", async (req, res) => {
+  try {
+    const u = await q(`SELECT * FROM users WHERE tg_id=$1`, [req.params.tg]).then(r => r.rows[0]);
+    if (!u) return res.json({ ok: false });
+    res.json({ ok: true, user: u });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 
-app.post('/api/withdraw/cancel/:id', async (req,res)=>{
-  try{
-    const tgId = Number(req.headers['x-ql-tg']); const id = Number(req.params.id);
-    const u = await q(`SELECT id FROM users WHERE tg_id=$1`, [tgId]).then(r=>r.rows[0]);
-    if(!u) return res.json({ ok:false });
-    const r = await q(`SELECT * FROM requests WHERE id=$1 AND user_id=$2`, [id, u.id]).then(r=>r.rows[0]);
-    if(!r || r.status!=='pending') return res.json({ ok:false });
-    await q(`UPDATE requests SET status='cancelled', updated_at=now() WHERE id=$1`, [id]);
-    await q(`INSERT INTO ops (user_id,type,amount,note) VALUES ($1,'info',0,'Withdraw cancelled')`, [u.id]);
-    res.json({ ok:true });
-  }catch(e){ res.status(500).json({ ok:false }); }
+// حفظ/تحديث عنوان السحب لطريقة معينة
+app.post("/api/withdraw/method", async (req, res) => {
+  try {
+    const { tg_id, method, addr } = req.body || {};
+    const u = await q(`SELECT * FROM users WHERE tg_id=$1`, [tg_id]).then(r => r.rows[0]);
+    if (!u) return res.json({ ok: false, error: "User not found" });
+    // نحفظها كـ op note بسيطة
+    await q(`INSERT INTO ops (user_id, type, amount, note) VALUES ($1,'system',0,$2)`, [u.id, `withdraw_addr:${method}:${addr}`]);
+    res.json({ ok: true });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 
-// --- Trades APIs for UI
-app.get('/api/trades/me', async (req,res)=>{
-  try{
-    const tgId = Number(req.headers['x-ql-tg']);
-    const u = await q(`SELECT id FROM users WHERE tg_id=$1`, [tgId]).then(r=>r.rows[0]);
-    if(!u) return res.json({ rows: [] });
-    const rows = await q(`SELECT id,symbol,status,pnl,stop_loss,take_profit FROM trades WHERE user_id=$1 ORDER BY id DESC`, [u.id]).then(r=>r.rows);
-    res.json({ rows });
-  }catch(e){ res.status(500).json({ rows: [] }); }
+// طلب سحب
+app.post("/api/withdraw", async (req, res) => {
+  try {
+    const { tg_id, amount, method } = req.body || {};
+    const u = await q(`SELECT * FROM users WHERE tg_id=$1`, [tg_id]).then(r => r.rows[0]);
+    if (!u) return res.json({ ok: false, error: "User not found" });
+    if (Number(u.balance) < Number(amount)) return res.json({ ok: false, error: "Insufficient balance" });
+
+    await q(`UPDATE users SET balance = balance - $1 WHERE id=$2`, [amount, u.id]);
+    const r0 = await q(`INSERT INTO requests (user_id, amount, method, status) VALUES ($1,$2,$3,'pending') RETURNING *`,
+      [u.id, amount, method]).then(r => r.rows[0]);
+    await q(`INSERT INTO ops (user_id, type, amount, note) VALUES ($1,'withdraw',$2,$3)`,
+      [u.id, amount, `withdraw_request:${method}`]);
+    res.json({ ok: true, request: r0 });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 
-app.post('/api/trades/close/:id', async (req,res)=>{
-  try{
-    const id = Number(req.params.id);
-    const tr = await q(`SELECT * FROM trades WHERE id=$1`, [id]).then(r=>r.rows[0]);
-    if(!tr || tr.status!=='open') return res.json({ ok:false });
-    await q(`UPDATE trades SET status='closed', closed_at=now() WHERE id=$1`, [id]);
-    res.json({ ok:true });
-  }catch(e){ res.status(500).json({ ok:false }); }
+// إلغاء طلب السحب قبل الموافقة
+app.post("/api/withdraw/cancel", async (req, res) => {
+  try {
+    const { tg_id, id } = req.body || {};
+    const u = await q(`SELECT * FROM users WHERE tg_id=$1`, [tg_id]).then(r => r.rows[0]);
+    if (!u) return res.json({ ok: false, error: "User not found" });
+    const r0 = await q(`SELECT * FROM requests WHERE id=$1 AND user_id=$2`, [id, u.id]).then(r => r.rows[0]);
+    if (!r0) return res.json({ ok: false, error: "not_found" });
+    if (r0.status !== "pending") return res.json({ ok: false, error: "cannot_cancel" });
+
+    await q(`UPDATE requests SET status='canceled', updated_at=NOW() WHERE id=$1`, [id]);
+    await q(`UPDATE users SET balance = balance + $1 WHERE id=$2`, [r0.amount, u.id]);
+    res.json({ ok: true });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 
-app.post('/api/trades/updateSLTP', async (req,res)=>{
-  try{
-    const { id, stop_loss, take_profit } = req.body;
-    await q(`UPDATE trades SET stop_loss=$1, take_profit=$2 WHERE id=$3`, [stop_loss, take_profit, id]);
-    res.json({ ok:true });
-  }catch(e){ res.status(500).json({ ok:false }); }
+// قائمة الطلبات
+app.get("/api/requests/:tg", async (req, res) => {
+  try {
+    const u = await q(`SELECT id FROM users WHERE tg_id=$1`, [req.params.tg]).then(r => r.rows[0]);
+    if (!u) return res.json({ ok: false, list: [] });
+    const list = await q(`SELECT * FROM requests WHERE user_id=$1 ORDER BY id DESC`, [u.id]).then(r => r.rows);
+    res.json({ ok: true, list });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 
-// --- Metals proxy
-let metalsCache = { xau:null, xag:null, t:0 };
-app.get('/api/metals', async (req,res)=>{
-  try{
-    const now = Date.now();
-    if(!metalsCache.xau || now - metalsCache.t > 15_000){
-      const xau = await fetch('https://query1.finance.yahoo.com/v8/finance/chart/XAUUSD=X?range=1d&interval=1m').then(r=>r.json());
-      const xag = await fetch('https://query1.finance.yahoo.com/v8/finance/chart/XAGUSD=X?range=1d&interval=1m').then(r=>r.json());
-      const pXAU = xau?.chart?.result?.[0]?.meta?.regularMarketPrice || null;
-      const pXAG = xag?.chart?.result?.[0]?.meta?.regularMarketPrice || null;
-      metalsCache = { xau:pXAU, xag:pXAG, t:now };
-    }
-    res.json({ ok:true, XAUUSD: metalsCache.xau, XAGUSD: metalsCache.xag });
-  }catch(e){ res.json({ ok:false }); }
+// عمليات المستخدم
+app.get("/api/ops/:tg", async (req, res) => {
+  try {
+    const u = await q(`SELECT id FROM users WHERE tg_id=$1`, [req.params.tg]).then(r => r.rows[0]);
+    if (!u) return res.json({ ok: false, list: [] });
+    const list = await q(`SELECT * FROM ops WHERE user_id=$1 ORDER BY id DESC LIMIT 30`, [u.id]).then(r => r.rows);
+    res.json({ ok: true, list });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 
-// --- Engine: daily targets & SL/TP enforcement
-setInterval(async ()=>{
-  try{
-    // Move balance gradually
-    const act = await q(`SELECT dt.*, u.id AS uid, u.tg_id
-                         FROM daily_targets dt
-                         JOIN users u ON u.id=dt.user_id
-                         WHERE dt.active=true`);
-    for(const row of (act.rows||[])){
-      const perTick = (Number(row.target) / (Number(row.duration_sec)||1800)) * 3; // per 3s
-      await q(`UPDATE users SET balance = (balance + ($1)::numeric) WHERE id=$2`, [perTick, row.uid]);
-      await q(`INSERT INTO ops (user_id,type,amount,note) VALUES ($1,'pnl',($2)::numeric,'daily step')`, [row.uid, perTick]);
-      await q(`UPDATE daily_targets SET duration_sec = GREATEST(duration_sec - 3,0) WHERE id=$1`, [row.id]);
-      const left = await q(`SELECT duration_sec FROM daily_targets WHERE id=$1`, [row.id]).then(r=>r.rows[0]?.duration_sec||0);
-      if(left<=0){
-        await q(`UPDATE daily_targets SET active=false WHERE id=$1`, [row.id]);
-        const tr = await q(`SELECT id FROM trades WHERE user_id=$1 AND status='open'`, [row.uid]).then(r=>r.rows[0]);
-        if(tr){
-          await q(`UPDATE trades SET status='closed', closed_at=now(), pnl=$1 WHERE id=$2`, [row.target, tr.id]);
-        }
+// ---------- MARKETS ----------
+app.get("/api/markets", async (_req, res) => {
+  try {
+    const pairs = [
+      { code: "BTCUSDT", type: "binance" },
+      { code: "ETHUSDT", type: "binance" },
+      { code: "XAUUSD",  type: "yahoo", y: "XAUUSD=X" },
+      { code: "XAGUSD",  type: "yahoo", y: "XAGUSD=X" }
+    ];
+    const out = {};
+    for (const p of pairs) {
+      if (p.type === "binance") {
+        const r = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${p.code}`);
+        const j = await r.json();
+        out[p.code] = Number(j?.price || 0);
+      } else {
+        const r = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${p.y}`);
+        const j = await r.json();
+        const price = j?.chart?.result?.[0]?.meta?.regularMarketPrice || 0;
+        out[p.code] = Number(price);
       }
     }
-
-    // Enforce SL/TP on open trades (use last ops sum as pnl approximation)
-    const open = await q(`SELECT t.*, u.id AS uid FROM trades t JOIN users u ON u.id=t.user_id WHERE t.status='open'`);
-    for(const t of (open.rows||[])){
-      // Approximate user's last PnL for this period (optional improvement: track pnl per trade)
-      // Here we check if reached SL/TP purely by pnl field if set during /close_trade by admin or daily_targets end.
-      if(t.stop_loss != null && Number(t.pnl) <= Number(t.stop_loss)){
-        await q(`UPDATE trades SET status='closed', closed_at=now() WHERE id=$1`, [t.id]);
-      }
-      if(t.take_profit != null && Number(t.pnl) >= Number(t.take_profit)){
-        await q(`UPDATE trades SET status='closed', closed_at=now() WHERE id=$1`, [t.id]);
-      }
-    }
-  }catch(e){ /*silent*/ }
-}, 3000);
-
-// Static files from project root
-app.use(express.static(path.join(__dirname)));
-
-// SPA fallback
-app.get('*', (req,res)=>{
-  res.sendFile(path.join(__dirname,'index.html'));
+    res.json({ ok: true, data: out });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 
-// Load bot within same service
-require('./bot.js');
+// ---------- STATIC (SPA) ----------
+app.get("*", (_req, res) => {
+  res.sendFile(path.join(__dirname, "index.html"));
+});
 
-app.listen(PORT, ()=> console.log('Server running on port '+PORT));
+app.listen(PORT, () => {
+  console.log("QL Trading AI v2.1 — Ready ✅");
+  console.log(`Server running on port ${PORT}`);
+});
