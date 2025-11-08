@@ -1,37 +1,32 @@
 services:
+  # 🌐 واجهة الموقع (الويب)
   - type: web
     name: qltrading-web
     env: node
-    plan: free
-    buildCommand: "npm install"
-    startCommand: "node server/index.js"
+    buildCommand: npm install
+    startCommand: node index.js
     envVars:
-      - key: PORT
-        value: "3000"
-      - key: JWT_SECRET
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
         sync: false
       - key: ADMIN_TOKEN
         sync: false
-      - key: DATABASE_URL
+      - key: JWT_SECRET
         sync: false
-      - key: FRONTEND_URL
-        sync: false
-      - key: CACHE_TTL_MS
-        value: "5000"
-      - key: WHATSAPP_URL
-        value: "https://wa.me/message/P6BBPSDL2CC4D1"
+
+  # 🤖 بوت التلغرام
   - type: worker
     name: qltrading-bot
     env: node
-    plan: free
-    buildCommand: "npm install"
-    startCommand: "node bot/bot.js"
+    buildCommand: npm install
+    startCommand: node bot.js
     envVars:
       - key: BOT_TOKEN
         sync: false
       - key: ADMIN_ID
         sync: false
-      - key: DATABASE_URL
-        sync: false
       - key: ADMIN_TOKEN
+        sync: false
+      - key: DATABASE_URL
         sync: false
