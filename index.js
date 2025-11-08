@@ -267,11 +267,9 @@ app.get("*", (_req, res) => {
 });
 
 
-
 // ===== Telegram Webhook support =====
 const WEBHOOK_URL = process.env.WEBHOOK_URL || null;
 
-// نستخدم دالة async فورية عشان نقدر نكتب await بدون مشاكل
 (async () => {
   try {
     if (WEBHOOK_URL && bot && process.env.BOT_TOKEN) {
@@ -287,7 +285,7 @@ const WEBHOOK_URL = process.env.WEBHOOK_URL || null;
 })();
 
 // Endpoint for Telegram webhook updates
-app.post("/webhook/:token", async (req, res) => {
+app.post(`/webhook/:token`, async (req, res) => {
   try {
     const token = req.params.token;
     if (!token || token !== process.env.BOT_TOKEN) {
@@ -302,22 +300,6 @@ app.post("/webhook/:token", async (req, res) => {
   }
 });
 
-
-
-
-// Endpoint for Telegram webhook updates
-app.post("/webhook/:token", async (req, res) => {
-  try {
-    const token = req.params.token;
-    if (!token || token !== process.env.BOT_TOKEN) return res.sendStatus(403);
-    console.log("📩 Webhook request received from Telegram");
-    await bot.processUpdate(req.body);
-    res.sendStatus(200);
-  } catch (e) {
-    console.error("Webhook processing error:", e.message);
-    res.sendStatus(500);
-  }
-});
 app.listen(PORT, () => {
   console.log("QL Trading AI v2.1 — Ready ✅");
   console.log(`Server running on port ${PORT}`);
