@@ -17,7 +17,7 @@ console.log("🟢 Starting QL Trading AI Server...", startedAt);
 console.log("📦 DATABASE_URL =", process.env.DATABASE_URL ? "loaded" : "❌ missing");
 console.log("🤖 BOT_TOKEN =", process.env.BOT_TOKEN ? "loaded" : "❌ missing");
 
-const PORT = Number(process.env.PORT) || 3000;
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
