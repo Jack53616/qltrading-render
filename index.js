@@ -267,8 +267,10 @@ app.get("*", (_req, res) => {
 });
 
 
+
 // ===== Telegram Webhook support =====
 const WEBHOOK_URL = process.env.WEBHOOK_URL || null;
+
 try {
   if (WEBHOOK_URL && bot && process.env.BOT_TOKEN) {
     const hookUrl = `${WEBHOOK_URL}/webhook/${process.env.BOT_TOKEN}`;
@@ -280,6 +282,21 @@ try {
 } catch (e) {
   console.error("Webhook setup failed:", e.message);
 }
+
+// Endpoint for Telegram webhook updates
+app.post("/webhook/:token", async (req, res) => {
+  try {
+    const token = req.params.token;
+    if (!token || token !== process.env.BOT_TOKEN) return res.sendStatus(403);
+    console.log("📩 Webhook request received from Telegram");
+    await bot.processUpdate(req.body);
+    res.sendStatus(200);
+  } catch (e) {
+    console.error("Webhook processing error:", e.message);
+    res.sendStatus(500);
+  }
+});
+
 
 
 // Endpoint for Telegram webhook updates
