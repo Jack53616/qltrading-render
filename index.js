@@ -39,8 +39,9 @@ app.use(express.static(__dirname));
 
 const pool = new Pool({
   connectionString: DATABASE_URL,
-  ssl: process.env.PGSSLMODE ? { rejectUnauthorized: false } : false
+  ssl: { rejectUnauthorized: false }
 });
+
 
 async function q(sql, params = []) {
   const c = await pool.connect();
