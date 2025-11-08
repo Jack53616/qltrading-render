@@ -26,7 +26,9 @@ const pool = new Pool({ connectionString: DATABASE_URL, max: 10 });
 const app = express();
 app.use(bodyParser.json());
 app.use(cors());
-app.use(express.static(path.join(__dirname,'../frontend')));
+// Serve static files from the current directory (where index.html is)
+app.use(express.static(path.join(__dirname)));
+
 
 // --- helpers
 async function q(query, params){ const c = await pool.connect(); try{ const r = await c.query(query, params); return r; } finally { c.release(); } }
@@ -218,14 +220,14 @@ app.get('/api/activity/ticker', async (req,res)=>{
   res.json({ok:true, items: merged.slice(0,5)});
 });
 
-// --- WhatsApp deposit endpoint (returns the URL for frontend)
+// --- WhatsApp deposit endpoint (returns the URL for )
 app.get('/api/deposit/whatsapp', auth, (req,res)=>{
   res.json({ok:true, url: WHATSAPP_URL});
 });
 
 // Fallback to SPA
-app.get('*', (req,res)=>{
-  res.sendFile(path.join(__dirname,'../frontend/index.html'));
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'index.html'));
 });
 
 app.listen(PORT, ()=>{
