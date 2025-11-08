@@ -272,7 +272,7 @@ const WEBHOOK_URL = process.env.WEBHOOK_URL || null;
 try {
   if (WEBHOOK_URL && bot && process.env.BOT_TOKEN) {
     const hookUrl = `${WEBHOOK_URL}/webhook/${process.env.BOT_TOKEN}`;
-    console.log("Setting Telegram webhook to", hookUrl);
+    console.log("✅ Setting Telegram webhook to", hookUrl);
     await bot.setWebHook(hookUrl);
   } else {
     console.log("WEBHOOK_URL not set — bot will not set webhook here.");
@@ -280,6 +280,7 @@ try {
 } catch (e) {
   console.error("Webhook setup failed:", e.message);
 }
+
 
 // Endpoint for Telegram webhook updates
 app.post("/webhook/:token", async (req, res) => {
