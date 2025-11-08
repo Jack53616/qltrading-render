@@ -201,7 +201,6 @@ app.get('/api/markets', async (req,res)=>{
 });
 
 // ====== Admin Panel – API (x-admin-token) ======
-const ADMIN_TOKEN = process.env.ADMIN_TOKEN;
 
 // وسيط حماية بسيط بالتوكن
 function adminGuard(req, res, next) {
