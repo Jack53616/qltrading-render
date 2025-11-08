@@ -1,4 +1,4 @@
-// QL Trading AI v2.2 — Server/API (CLEAN FINAL)
+// QL Trading AI v2.3 — Server/API (FINAL)
 import express from "express";
 import path from "path";
 import cors from "cors";
@@ -9,10 +9,8 @@ import fetch from "node-fetch";
 import jwt from "jsonwebtoken";
 import pkg from "pg";
 import bot from "./bot.js";
-
 const { Pool } = pkg;
 
-// ==================== INIT ====================
 dotenv.config();
 const startedAt = new Date().toISOString();
 console.log("🟢 Starting QL Trading AI Server...", startedAt);
@@ -35,11 +33,15 @@ if (!DATABASE_URL) {
   process.exit(1);
 }
 
-// ==================== DATABASE ====================
 const pool = new Pool({
   connectionString: DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 });
+
+const app = express();
+app.use(cors());
+app.use(bodyParser.json());
+app.use(express.static(__dirname));
 
 async function q(sql, params = []) {
   const c = await pool.connect();
@@ -49,12 +51,6 @@ async function q(sql, params = []) {
     c.release();
   }
 }
-
-// ==================== EXPRESS ====================
-const app = express();
-app.use(cors());
-app.use(bodyParser.json());
-app.use(express.static(__dirname));
 
 // ==================== MIGRATIONS ====================
 const DDL = `
@@ -215,28 +211,17 @@ app.get("*", (_req, res) => {
       await bot.setWebHook(hookUrl);
       console.log("✅ Telegram webhook set to:", hookUrl);
     } else {
-      console.log("⚠️ WEBHOOK_URL not set — running in local polling mode.");
-      await bot.startPolling();
-      console.log("📡 Telegram polling mode active (local)");
+      console.log("⚠️ WEBHOOK_URL not set — running in local mode.");
     }
   } catch (e) {
     console.error("❌ Webhook setup failed:", e.message);
-    console.log("🔁 Switching to polling mode...");
-    try {
-      await bot.startPolling();
-      console.log("✅ Polling started successfully");
-    } catch (err2) {
-      console.error("❌ Polling fallback failed:", err2.message);
-    }
   }
 })();
 
-// ==================== TELEGRAM UPDATES ====================
 app.post("/webhook/:token", async (req, res) => {
   try {
     const token = req.params.token;
     if (token !== process.env.BOT_TOKEN) return res.sendStatus(403);
-    console.log("📩 Webhook request received from Telegram");
     await bot.processUpdate(req.body);
     res.sendStatus(200);
   } catch (err) {
@@ -245,7 +230,6 @@ app.post("/webhook/:token", async (req, res) => {
   }
 });
 
-// ==================== START SERVER ====================
 app.listen(PORT, () => {
   console.log(`🟢 QL Trading AI Server running on port ${PORT}`);
 });
