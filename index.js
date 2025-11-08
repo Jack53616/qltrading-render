@@ -200,6 +200,122 @@ app.get('/api/markets', async (req,res)=>{
   }
 });
 
+// ====== Admin Panel – API (x-admin-token) ======
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN;
+
+// وسيط حماية بسيط بالتوكن
+function adminGuard(req, res, next) {
+  const tok = req.headers['x-admin-token'];
+  if (!tok || tok !== ADMIN_TOKEN) return res.status(403).json({ ok: false, error: 'forbidden' });
+  next();
+}
+
+// إحصائيات عامة للداشبورد
+app.get('/api/admin/stats', adminGuard, async (req, res) => {
+  try {
+    const u = await q(`SELECT COUNT(*)::int AS c FROM users`);
+    const dep = await q(`SELECT COALESCE(SUM(CASE WHEN amount>0 THEN amount ELSE 0 END),0)::float AS v FROM ops WHERE type='admin'`);
+    const wd  = await q(`SELECT COALESCE(SUM(amount),0)::float AS v FROM requests WHERE status='approved'`);
+    const open= await q(`SELECT COUNT(*)::int AS c FROM trades WHERE status='open'`);
+    const recent = await q(`SELECT id,type,amount,note,created_at FROM ops ORDER BY id DESC LIMIT 20`);
+    res.json({ ok:true,
+      users: u.rows[0]?.c||0,
+      deposits: dep.rows[0]?.v||0,
+      withdrawals: wd.rows[0]?.v||0,
+      open_trades: open.rows[0]?.c||0,
+      recent: recent.rows
+    });
+  } catch(e){ res.status(500).json({ok:false,error:e.message}); }
+});
+
+// قائمة المستخدمين + بحث
+app.get('/api/admin/users', adminGuard, async (req, res) => {
+  const search = (req.query.q||'').trim();
+  try{
+    const rows = await q(`
+      SELECT id, tg_id, name, balance, sub_expires_at
+      FROM users
+      WHERE ($1='' OR name ILIKE '%'||$1||'%' OR tg_id::text LIKE '%'||$1||'%')
+      ORDER BY id DESC LIMIT 300
+    `,[search]);
+    res.json({ ok:true, items: rows.rows });
+  }catch(e){ res.status(500).json({ok:false,error:e.message}); }
+});
+
+// تعديل رصيد
+app.post('/api/admin/users/:id/balance', adminGuard, async (req,res)=>{
+  const id = req.params.id;
+  const { delta, note='' } = req.body||{};
+  try{
+    await q(`UPDATE users SET balance = balance + $1 WHERE id=$2`, [Number(delta)||0, id]);
+    await q(`INSERT INTO ops(type, amount, note, user_id) VALUES('admin', $1, $2, $3)`,
+      [Number(delta)||0, note, id]);
+    res.json({ ok:true });
+  }catch(e){ res.status(500).json({ok:false,error:e.message}); }
+});
+
+// السحوبات
+app.get('/api/admin/withdrawals', adminGuard, async (req,res)=>{
+  try{
+    const rows = await q(`
+      SELECT id, user_id, amount, method, status, note, created_at, updated_at
+      FROM requests ORDER BY id DESC LIMIT 300
+    `);
+    res.json({ ok:true, items: rows.rows });
+  }catch(e){ res.status(500).json({ok:false,error:e.message}); }
+});
+
+app.post('/api/admin/withdrawals/:id/approve', adminGuard, async (req,res)=>{
+  try{
+    await q(`UPDATE requests SET status='approved', updated_at=NOW() WHERE id=$1`,[req.params.id]);
+    res.json({ ok:true });
+  }catch(e){ res.status(500).json({ok:false,error:e.message}); }
+});
+
+app.post('/api/admin/withdrawals/:id/reject', adminGuard, async (req,res)=>{
+  const { reason='' } = req.body||{};
+  try{
+    await q(`UPDATE requests SET status='rejected', note=$2, updated_at=NOW() WHERE id=$1`,
+      [req.params.id, reason]);
+    res.json({ ok:true });
+  }catch(e){ res.status(500).json({ok:false,error:e.message}); }
+});
+
+// الصفقات
+app.get('/api/admin/trades', adminGuard, async (req,res)=>{
+  try{
+    const rows = await q(`SELECT id,user_id,symbol,status,pnl,opened_at,closed_at FROM trades ORDER BY id DESC LIMIT 300`);
+    res.json({ ok:true, items: rows.rows });
+  }catch(e){ res.status(500).json({ok:false,error:e.message}); }
+});
+
+app.post('/api/admin/trades/open', adminGuard, async (req,res)=>{
+  const { user_id, symbol='XAUUSD' } = req.body||{};
+  try{
+    await q(`INSERT INTO trades(user_id,symbol,status,opened_at) VALUES($1,$2,'open',NOW())`,
+      [user_id, symbol]);
+    res.json({ ok:true });
+  }catch(e){ res.status(500).json({ok:false,error:e.message}); }
+});
+
+app.post('/api/admin/trades/:id/close', adminGuard, async (req,res)=>{
+  const { pnl=0 } = req.body||{};
+  const id = req.params.id;
+  try{
+    const r = await q(`UPDATE trades SET status='closed', pnl=$2, closed_at=NOW() WHERE id=$1 RETURNING user_id,pnl`, [id, Number(pnl)||0]);
+    if(r.rows[0]){
+      await q(`UPDATE users SET balance = balance + $1 WHERE id=$2`, [Number(r.rows[0].pnl)||0, r.rows[0].user_id]);
+      await q(`INSERT INTO ops(type, amount, note, user_id) VALUES('pnl',$1,'close trade',$2)`,
+        [Number(r.rows[0].pnl)||0, r.rows[0].user_id]);
+    }
+    res.json({ ok:true });
+  }catch(e){ res.status(500).json({ok:false,error:e.message}); }
+});
+
+// صفحة الأدمن نفسها
+app.get('/admin', (req,res)=> res.sendFile(path.join(__dirname,'admin.html')));
+
+
 // --- Activity ticker (real + aggregates; no fabricated personal names)
 app.get('/api/activity/ticker', async (req,res)=>{
   // Latest ops and requests (approved) in last 24h
