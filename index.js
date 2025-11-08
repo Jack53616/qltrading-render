@@ -270,6 +270,7 @@ app.get("*", (_req, res) => {
 // ===== Telegram Webhook support =====
 const WEBHOOK_URL = process.env.WEBHOOK_URL || null;
 
+// Webhook setup
 (async () => {
   try {
     if (WEBHOOK_URL && bot && process.env.BOT_TOKEN) {
@@ -284,10 +285,13 @@ const WEBHOOK_URL = process.env.WEBHOOK_URL || null;
   }
 })();
 
-app.post("/webhook/:token", async (req, res) => {
+// Handle Telegram updates
+app.post(`/webhook/:token`, async (req, res) => {
   try {
     const token = req.params.token;
-    if (token !== process.env.BOT_TOKEN) return res.sendStatus(403);
+    if (!token || token !== process.env.BOT_TOKEN) {
+      return res.sendStatus(403);
+    }
     console.log("📩 Webhook request received from Telegram");
     await bot.processUpdate(req.body);
     res.sendStatus(200);
@@ -297,6 +301,9 @@ app.post("/webhook/:token", async (req, res) => {
   }
 });
 
+// Start server
 app.listen(PORT, () => {
-  console.log(`🟢 QL Trading AI server running on port ${PORT}`);
+  console.log("QL Trading AI v2.1 — Ready ✅");
+  console.log(`🟢 Server running on port ${PORT}`);
 });
+
