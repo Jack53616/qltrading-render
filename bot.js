@@ -1,23 +1,47 @@
-// QL Trading AI v2.1 FINAL — Telegram Bot (Fixed Version)
+// QL Trading AI v2.2 — Server/API
+import express from "express";
+import path from "path";
+import cors from "cors";
+import bodyParser from "body-parser";
+import { fileURLToPath } from "url";
 import dotenv from "dotenv";
-import TelegramBot from "node-telegram-bot-api";
+import fetch from "node-fetch";
+import jwt from "jsonwebtoken";
 import pkg from "pg";
+import bot from "./bot.js";
 const { Pool } = pkg;
 
 dotenv.config();
-console.log("🤖 Telegram bot initialized via webhook mode");
+const startedAt = new Date().toISOString();
+console.log("🟢 Starting QL Trading AI Server...", startedAt);
+console.log("📦 DATABASE_URL =", process.env.DATABASE_URL ? "loaded" : "❌ missing");
+console.log("🤖 BOT_TOKEN =", process.env.BOT_TOKEN ? "loaded" : "❌ missing");
 
-const { BOT_TOKEN, ADMIN_ID, DATABASE_URL } = process.env;
-if (!BOT_TOKEN) { console.error("BOT_TOKEN missing"); process.exit(1); }
-if (!DATABASE_URL) { console.error("DATABASE_URL missing"); process.exit(1); }
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
-const bot = new TelegramBot(BOT_TOKEN);
-console.log("✅ Connected to PostgreSQL via", (DATABASE_URL || "").split("@").pop());
+const {
+  DATABASE_URL,
+  PORT = 10000,
+  ADMIN_TOKEN = "ql_admin_2025",
+  JWT_SECRET = "ql_secret_2025"
+} = process.env;
 
+if (!DATABASE_URL) {
+  console.error("DATABASE_URL missing");
+  process.exit(1);
+}
+
+// ✅ توحيد اتصال قاعدة البيانات عبر SSL
 const pool = new Pool({
   connectionString: DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 });
+
+const app = express();
+app.use(cors());
+app.use(bodyParser.json());
+app.use(express.static(__dirname)); // يخدم index.html والملفات الثابتة
 
 async function q(sql, params = []) {
   const c = await pool.connect();
@@ -28,166 +52,152 @@ async function q(sql, params = []) {
   }
 }
 
-const isAdmin = (msg) => Number(msg?.from?.id) === Number(ADMIN_ID);
+// ==================== MIGRATIONS ====================
+const DDL = `
+CREATE TABLE IF NOT EXISTS users (
+  id SERIAL PRIMARY KEY,
+  tg_id BIGINT UNIQUE,
+  name TEXT,
+  email TEXT,
+  balance NUMERIC(18,2) DEFAULT 0,
+  wins NUMERIC(18,2) DEFAULT 0,
+  losses NUMERIC(18,2) DEFAULT 0,
+  level TEXT DEFAULT 'Bronze',
+  sub_expires TIMESTAMP,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS keys (
+  id SERIAL PRIMARY KEY,
+  key_code TEXT UNIQUE NOT NULL,
+  days INT NOT NULL DEFAULT 30,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS ops (
+  id SERIAL PRIMARY KEY,
+  user_id INT REFERENCES users(id) ON DELETE CASCADE,
+  type TEXT,
+  amount NUMERIC(18,2) DEFAULT 0,
+  note TEXT,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS trades (
+  id SERIAL PRIMARY KEY,
+  user_id INT REFERENCES users(id) ON DELETE CASCADE,
+  symbol TEXT,
+  status TEXT DEFAULT 'open',
+  pnl NUMERIC(18,2) DEFAULT 0,
+  sl NUMERIC(18,2),
+  tp NUMERIC(18,2),
+  opened_at TIMESTAMP DEFAULT NOW(),
+  closed_at TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS requests (
+  id SERIAL PRIMARY KEY,
+  user_id INT REFERENCES users(id) ON DELETE CASCADE,
+  amount NUMERIC(18,2) NOT NULL,
+  method TEXT,
+  addr TEXT,
+  status TEXT DEFAULT 'pending',
+  created_at TIMESTAMP DEFAULT NOW(),
+  updated_at TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS daily_targets (
+  id SERIAL PRIMARY KEY,
+  user_id INT REFERENCES users(id) ON DELETE CASCADE,
+  target NUMERIC(18,2) NOT NULL,
+  symbol TEXT DEFAULT 'XAUUSD',
+  active BOOLEAN DEFAULT TRUE,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+`;
 
-// رسالة ترحيب عامة
-bot.onText(/^\/start$/, (msg) => {
-  const t = `👋 Welcome to QL Trading AI
-🤖 The smart trading bot that works automatically for you.
-💰 Just deposit funds and watch profits added to your wallet.
-📊 Track balance, trades, and withdrawals inside your wallet.
-🕒 24/7 support via WhatsApp or Telegram.
-
-👋 أهلاً بك في QL Trading AI
-🤖 البوت الذكي الذي يعمل تلقائياً لإدارة تداولاتك.
-💰 كل ما عليك هو الإيداع وانتظر الأرباح تُضاف تلقائياً.
-📊 تابع رصيدك، صفقاتك، وطلبات السحب من داخل المحفظة.
-🕒 دعم 24/7 عبر واتساب أو تيليجرام.`;
-  bot.sendMessage(msg.chat.id, t);
-});
-
-// ===== أوامر الأدمن =====
-bot.onText(/^\/help$/, (msg) => {
-  if (!isAdmin(msg)) return;
-  bot.sendMessage(msg.chat.id, `
-🛠 Admin Commands:
-/create_key <KEY> <DAYS>
-/addbalance <tg_id> <amount>
-/open_trade <tg_id> <symbol>
-/close_trade <trade_id> <pnl>
-/setdaily <tg_id> <amount>
-/approve_withdraw <id>
-/reject_withdraw <id> <reason>
-/broadcast all <message>
-/notify <tg_id> <message>
-  `.trim());
-});
-
-// ✅ إنشاء مفتاح اشتراك (مع فحص مسبق)
-bot.onText(/^\/create_key\s+(\S+)(?:\s+(\d+))?$/, async (msg, m) => {
-  if (!isAdmin(msg)) return;
-  const key = m[1];
-  const days = Number(m[2] || 30);
+app.post("/api/admin/migrate", async (req, res) => {
+  if (req.headers["x-admin-token"] !== ADMIN_TOKEN)
+    return res.status(403).json({ ok: false, error: "forbidden" });
 
   try {
-    const exists = await q(`SELECT 1 FROM keys WHERE key_code=$1`, [key]);
-    if (exists.rowCount > 0) {
-      return bot.sendMessage(msg.chat.id, `⚠️ The key "${key}" already exists!`);
+    await q(DDL);
+    return res.json({ ok: true, msg: "migrated" });
+  } catch (e) {
+    return res.json({ ok: false, error: e.message });
+  }
+});
+
+// ==================== AUTH ====================
+app.post("/api/token", (req, res) => {
+  const { tg_id } = req.body || {};
+  if (!tg_id) return res.json({ ok: false, error: "missing tg_id" });
+  const token = jwt.sign({ tg_id }, JWT_SECRET, { expiresIn: "30d" });
+  res.json({ ok: true, token });
+});
+
+// ==================== ACTIVATE (إصلاح كامل) ====================
+app.post("/api/activate", async (req, res) => {
+  console.log("🔑 Activation request:", req?.body?.key, req?.body?.tg_id);
+  console.log("📦 DB Connection:", (process.env.DATABASE_URL || "").split("@").pop());
+
+  try {
+    const { key, tg_id, name = "", email = "" } = req.body || {};
+    if (!key || !tg_id)
+      return res.json({ ok: false, error: "missing_parameters" });
+
+    // تجاهل حالة الأحرف
+    const k = await q(`SELECT * FROM keys WHERE LOWER(key_code)=LOWER($1)`, [key]).then(r => r.rows[0]);
+    if (!k) return res.json({ ok: false, error: "invalid_key" });
+
+    const u = await q(
+      `INSERT INTO users (tg_id, name, email, sub_expires, level)
+       VALUES ($1,$2,$3, NOW() + ($4 || ' days')::interval, 'Bronze')
+       ON CONFLICT (tg_id) DO UPDATE
+       SET sub_expires = NOW() + ($4 || ' days')::interval
+       RETURNING *`,
+      [tg_id, name, email, k.days]
+    ).then(r => r.rows[0]);
+
+    await q(`DELETE FROM keys WHERE key_code=$1`, [k.key_code]);
+    console.log(`✅ User activated: ${u.name} (${tg_id})`);
+    res.json({ ok: true, user: u });
+  } catch (e) {
+    console.error("❌ Activation error:", e.message);
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+// ==================== باقي API (سحب / عمليات / أسواق / Static) ====================
+app.get("*", (_req, res) => {
+  res.sendFile(path.join(__dirname, "index.html"));
+});
+
+// ==================== Telegram Webhook ====================
+const WEBHOOK_URL = process.env.WEBHOOK_URL || null;
+
+(async () => {
+  try {
+    if (WEBHOOK_URL && bot && process.env.BOT_TOKEN) {
+      const hookUrl = `${WEBHOOK_URL}/webhook/${process.env.BOT_TOKEN}`;
+      console.log("✅ Setting Telegram webhook to", hookUrl);
+      await bot.setWebHook(hookUrl);
+    } else {
+      console.log("⚠️ WEBHOOK_URL not set — bot will not set webhook here.");
     }
-
-    await q(`INSERT INTO keys (key_code, days) VALUES ($1,$2)`, [key, days]);
-    console.log("🧩 New key created:", key, days, "days");
-    bot.sendMessage(msg.chat.id, `✅ Key created: ${key} (${days}d)`);
   } catch (e) {
-    bot.sendMessage(msg.chat.id, `❌ Database error: ${e.message}`);
+    console.error("❌ Webhook setup failed:", e.message);
   }
-});
+})();
 
-// 💰 تعديل الرصيد
-bot.onText(/^\/addbalance\s+(\d+)\s+(-?\d+(?:\.\d+)?)$/, async (msg, m) => {
-  if (!isAdmin(msg)) return;
-  const tg = Number(m[1]);
-  const amount = Number(m[2]);
-  const u = await q(`SELECT * FROM users WHERE tg_id=$1`, [tg]).then(r => r.rows[0]);
-  if (!u) return bot.sendMessage(msg.chat.id, "❌ User not found");
-  await q(`UPDATE users SET balance = balance + $1 WHERE id=$2`, [amount, u.id]);
-  await q(`INSERT INTO ops (user_id, type, amount, note) VALUES ($1,'admin',$2,'manual admin op')`, [u.id, amount]);
-  bot.sendMessage(msg.chat.id, `✅ Balance updated for tg:${tg} by ${amount}`);
-  bot.sendMessage(tg, `💳 تم الإيداع في حسابك: ${amount > 0 ? '+' : '-'}$${Math.abs(amount).toFixed(2)}`).catch(() => {});
-});
-
-// 📈 فتح صفقة
-bot.onText(/^\/open_trade\s+(\d+)\s+(\S+)$/, async (msg, m) => {
-  if (!isAdmin(msg)) return;
-  const tg = Number(m[1]);
-  const symbol = m[2].toUpperCase();
-  const u = await q(`SELECT * FROM users WHERE tg_id=$1`, [tg]).then(r => r.rows[0]);
-  if (!u) return bot.sendMessage(msg.chat.id, "❌ User not found");
-  const tr = await q(`INSERT INTO trades (user_id, symbol, status) VALUES ($1,$2,'open') RETURNING *`, [u.id, symbol]).then(r => r.rows[0]);
-  bot.sendMessage(msg.chat.id, `✅ Opened trade #${tr.id} on ${symbol} for ${tg}`);
-  bot.sendMessage(tg, `📈 تم فتح صفقة على ${symbol} لحسابك.`).catch(() => {});
-});
-
-// 📉 إغلاق صفقة
-bot.onText(/^\/close_trade\s+(\d+)\s+(-?\d+(?:\.\d+)?)$/, async (msg, m) => {
-  if (!isAdmin(msg)) return;
-  const tradeId = Number(m[1]);
-  const pnl = Number(m[2]);
-  const tr = await q(`SELECT * FROM trades WHERE id=$1`, [tradeId]).then(r => r.rows[0]);
-  if (!tr || tr.status !== "open") return bot.sendMessage(msg.chat.id, "❌ No open trade");
-  await q(`UPDATE trades SET status='closed', closed_at=NOW(), pnl=$1 WHERE id=$2`, [pnl, tradeId]);
-  if (pnl >= 0)
-    await q(`UPDATE users SET balance = balance + $1, wins = wins + $1 WHERE id=$2`, [pnl, tr.user_id]);
-  else
-    await q(`UPDATE users SET losses = losses + $1 WHERE id=$2`, [Math.abs(pnl), tr.user_id]);
-  await q(`INSERT INTO ops (user_id, type, amount, note) VALUES ($1,'pnl',$2,'close trade')`, [tr.user_id, pnl]);
-  const tg = await q(`SELECT tg_id FROM users WHERE id=$1`, [tr.user_id]).then(r => r.rows[0]?.tg_id);
-  bot.sendMessage(msg.chat.id, `✅ Closed trade #${tradeId} PnL ${pnl}`);
-  if (tg) bot.sendMessage(Number(tg), `✅ تم إغلاق الصفقة. النتيجة: ${pnl >= 0 ? '+' : '-'}$${Math.abs(pnl).toFixed(2)}`).catch(() => {});
-});
-
-// 🚀 setdaily
-bot.onText(/^\/setdaily\s+(\d+)\s+(-?\d+(?:\.\d+)?)$/, async (msg, m) => {
-  if (!isAdmin(msg)) return;
-  const tg = Number(m[1]);
-  const target = Number(m[2]);
-  const u = await q(`SELECT * FROM users WHERE tg_id=$1`, [tg]).then(r => r.rows[0]);
-  if (!u) return bot.sendMessage(msg.chat.id, "❌ User not found");
-  await q(`INSERT INTO daily_targets (user_id, target, active) VALUES ($1,$2,TRUE)`, [u.id, target]);
-  bot.sendMessage(msg.chat.id, `🚀 setdaily started for tg:${tg} target ${target}`);
-  bot.sendMessage(tg, `🚀 تم بدء صفقة يومية (الهدف ${target >= 0 ? '+' : '-'}$${Math.abs(target)}).`);
-});
-
-// 💸 approve withdraw
-bot.onText(/^\/approve_withdraw\s+(\d+)$/, async (msg, m) => {
-  if (!isAdmin(msg)) return;
-  const id = Number(m[1]);
-  const r0 = await q(`SELECT * FROM requests WHERE id=$1`, [id]).then(r => r.rows[0]);
-  if (!r0) return bot.sendMessage(msg.chat.id, "❌ Request not found");
-  if (r0.status !== "pending") return bot.sendMessage(msg.chat.id, "❌ Not pending");
-  await q(`UPDATE requests SET status='approved', updated_at=NOW() WHERE id=$1`, [id]);
-  const tg = await q(`SELECT tg_id FROM users WHERE id=$1`, [r0.user_id]).then(r => r.rows[0]?.tg_id);
-  bot.sendMessage(msg.chat.id, `✅ Withdraw #${id} approved`);
-  if (tg) bot.sendMessage(Number(tg), `💸 تمت الموافقة على طلب السحب #${id} بقيمة $${Number(r0.amount).toFixed(2)}.`).catch(() => {});
-});
-
-// ❌ reject withdraw
-bot.onText(/^\/reject_withdraw\s+(\d+)\s+(.+)$/, async (msg, m) => {
-  if (!isAdmin(msg)) return;
-  const id = Number(m[1]);
-  const reason = m[2];
-  const r0 = await q(`SELECT * FROM requests WHERE id=$1`, [id]).then(r => r.rows[0]);
-  if (!r0) return bot.sendMessage(msg.chat.id, "❌ Request not found");
-  if (r0.status !== "pending") return bot.sendMessage(msg.chat.id, "❌ Not pending");
-  await q(`UPDATE requests SET status='rejected', updated_at=NOW() WHERE id=$1`, [id]);
-  await q(`UPDATE users SET balance = balance + $1 WHERE id=$2`, [r0.amount, r0.user_id]);
-  const tg = await q(`SELECT tg_id FROM users WHERE id=$1`, [r0.user_id]).then(r => r.rows[0]?.tg_id);
-  bot.sendMessage(msg.chat.id, `✅ Withdraw #${id} rejected`);
-  if (tg) bot.sendMessage(Number(tg), `❌ تم رفض طلب السحب #${id}. السبب: ${reason}`).catch(() => {});
-});
-
-// 📢 broadcast / notify
-bot.onText(/^\/broadcast\s+all\s+([\s\S]+)$/, async (msg, m) => {
-  if (!isAdmin(msg)) return;
-  const text = m[1].trim();
-  const list = await q(`SELECT tg_id FROM users WHERE tg_id IS NOT NULL`);
-  let ok = 0;
-  for (const row of list.rows) {
-    try { await bot.sendMessage(Number(row.tg_id), text); ok++; } catch {}
-  }
-  bot.sendMessage(msg.chat.id, `🚀 Broadcast sent to ${ok} users.`);
-});
-
-bot.onText(/^\/notify\s+(\d+)\s+([\s\S]+)$/, async (msg, m) => {
-  if (!isAdmin(msg)) return;
-  const tg = Number(m[1]);
-  const text = m[2];
+app.post("/webhook/:token", async (req, res) => {
   try {
-    await bot.sendMessage(tg, text);
-    bot.sendMessage(msg.chat.id, "✅ Sent.");
-  } catch (e) {
-    bot.sendMessage(msg.chat.id, "❌ " + e.message);
+    const token = req.params.token;
+    if (token !== process.env.BOT_TOKEN) return res.sendStatus(403);
+    console.log("📩 Webhook request received from Telegram");
+    await bot.processUpdate(req.body);
+    res.sendStatus(200);
+  } catch (err) {
+    console.error("❌ Webhook processing error:", err.message);
+    res.sendStatus(500);
   }
 });
 
-export default bot;
+app.listen(PORT, () => {
+  console.log(`🟢 QL Trading AI server running on port ${PORT}`);
+});
