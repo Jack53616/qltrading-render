@@ -1,0 +1,23 @@
+{
+  "name": "ql-trading-ai",
+  "version": "2.1.0",
+  "description": "QL Trading AI v2.1 FINAL (Web + Bot + Markets + i18n)",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "bot": "node bot.js",
+    "dev": "NODE_ENV=development node index.js"
+  },
+  "dependencies": {
+    "body-parser": "^1.20.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "node-fetch": "^3.3.2",
+    "pg": "^8.11.5",
+    "node-telegram-bot-api": "^0.64.0",
+    "ws": "^8.18.0",
+    "jsonwebtoken": "^9.0.2"
+  }
+}

@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>QL Trading AI</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;800;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./style.css"/>
+</head>
+<body>
+
+  <!-- Splash / Logo -->
+  <div id="splash" class="splash">
+    <div class="logo-wrap">
+      <img src="./logo.svg" alt="QL" class="logo"/>
+      <div class="logo-text">QL Trading AI</div>
+    </div>
+  </div>
+
+  <!-- Subscription Gate -->
+  <div id="gate" class="gate">
+    <video class="bg" src="./bg.mp4" autoplay muted loop playsinline></video>
+    <div class="glass card gate-card">
+      <div class="g-title" data-i18n="gateTitle">QL Trading — Access</div>
+      <div class="g-sub" data-i18n="gateSub">Enter your subscription key to unlock your wallet</div>
+      <input id="g-name" class="input" placeholder="Name / الاسم"/>
+      <input id="g-email" class="input" placeholder="Email"/>
+      <input id="g-key" class="input" placeholder="Enter key..."/>
+      <div class="row">
+        <button id="g-activate" class="btn" data-i18n="confirm">Confirm</button>
+        <a id="g-buy" class="btn ghost" href="https://wa.me/message/P6BBPSDL2CC4D1" target="_blank" data-i18n="buyKey">Buy a key</a>
+      </div>
+      <div id="g-toast" class="toast"></div>
+    </div>
+  </div>
+
+  <!-- Wallet -->
+  <div id="app" class="safe hidden">
+    <header class="top glass">
+      <div class="t-row">
+        <h1 class="brand">QL Wallet</h1>
+        <div class="actions">
+          <button id="btnMusic" class="i-btn" title="Music">🎵</button>
+          <button id="btnLang" class="i-btn" title="Languages">🌐</button>
+        </div>
+      </div>
+      <nav class="seg glass">
+        <button class="seg-btn active" data-tab="wallet" data-i18n="tabWallet">Home</button>
+        <button class="seg-btn" data-tab="markets" data-i18n="tabMarkets">Markets</button>
+        <button class="seg-btn" data-tab="trades" data-i18n="tabTrades">Trades</button>
+        <button class="seg-btn" data-tab="withdraw" data-i18n="tabWithdraw">Withdraw</button>
+        <button class="seg-btn" data-tab="requests" data-i18n="tabRequests">Requests</button>
+        <button class="seg-btn" data-tab="support" data-i18n="tabSupport">Support</button>
+      </nav>
+    </header>
+
+    <main>
+      <!-- Wallet Tab -->
+      <section id="tab-wallet" class="tab show">
+        <div class="balance glass neon">
+          <div class="badge">👑 VIP Gold</div>
+          <div class="b-row">
+            <div id="balance" class="b-val">$0.00</div>
+            <div id="ticker" class="pnl">+0.00</div>
+          </div>
+          <div id="tradeBadge" class="muted" data-i18n="noOpenTrade">No open trade</div>
+          <div class="chart">
+            <svg viewBox="0 0 100 28"><path id="chartPath" d="M0,18 C15,12 22,16 30,15 C40,14 52,10 60,12 C70,14 82,11 100,12"/></svg>
+          </div>
+
+          <div class="quick">
+            <button class="qa" id="goWithdraw">⬇<small data-i18n="withdraw">Withdraw</small></button>
+            <button class="qa" id="goMarkets">📈<small data-i18n="markets">Markets</small></button>
+            <button class="qa" id="goSupport">🛟<small data-i18n="support">Support</small></button>
+          </div>
+        </div>
+
+        <div class="stats">
+          <div class="stat glass"><div data-i18n="day">Day</div><b id="pnlDay">$0.00</b></div>
+          <div class="stat glass"><div data-i18n="month">Month</div><b id="pnlMonth">$0.00</b></div>
+          <div class="stat glass"><div data-i18n="subLeft">Subscription</div><b id="subLeft">—</b></div>
+        </div>
+
+        <div class="card glass">
+          <div class="c-title" data-i18n="recent">Recent activity</div>
+          <div id="ops" class="ops"></div>
+        </div>
+
+        <div class="card glass">
+          <div class="c-title" data-i18n="live">Live feed</div>
+          <div id="feed" class="feed"></div>
+        </div>
+      </section>
+
+      <!-- Markets -->
+      <section id="tab-markets" class="tab">
+        <div class="grid">
+          <div class="mkt glass" data-sym="XAUUSD"><div class="mh"><b>Gold</b><span class="pct">+0.0%</span></div><div class="price">$—</div><canvas class="spark" width="340" height="60"></canvas></div>
+          <div class="mkt glass" data-sym="XAGUSD"><div class="mh"><b>Silver</b><span class="pct">+0.0%</span></div><div class="price">$—</div><canvas class="spark" width="340" height="60"></canvas></div>
+          <div class="mkt glass" data-sym="BTCUSDT"><div class="mh"><b>BTC</b><span class="pct">+0.0%</span></div><div class="price">$—</div><canvas class="spark" width="340" height="60"></canvas></div>
+          <div class="mkt glass" data-sym="ETHUSDT"><div class="mh"><b>ETH</b><span class="pct">+0.0%</span></div><div class="price">$—</div><canvas class="spark" width="340" height="60"></canvas></div>
+        </div>
+      </section>
+
+      <!-- Trades -->
+      <section id="tab-trades" class="tab">
+        <div class="card glass">
+          <div class="c-title" data-i18n="myTrades">My Trades</div>
+          <div id="tradesList" class="ops"></div>
+          <div class="row">
+            <input id="sl" class="input" placeholder="Stop-Loss"/>
+            <input id="tp" class="input" placeholder="Take-Profit"/>
+            <button id="saveSLTP" class="btn" data-i18n="save">Save</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Withdraw -->
+      <section id="tab-withdraw" class="tab">
+        <div class="card glass">
+          <div class="c-title" data-i18n="withdrawCrypto">Withdraw (Crypto only)</div>
+          <button id="pickMethod" class="btn">Method: <b id="methodLabel">USDT (TRC20)</b></button>
+          <div id="methodView" class="method"></div>
+          <div class="row">
+            <input id="amount" type="number" class="input" placeholder="Amount"/>
+            <button id="reqWithdraw" class="btn" data-i18n="request">Request</button>
+          </div>
+          <small class="muted" data-i18n="savedAddr">* Saved address for selected method will be used.</small>
+          <div class="card glass" style="margin-top:10px">
+            <div class="c-title" data-i18n="deposit">Deposit</div>
+            <button id="whatsapp" class="btn ghost">WhatsApp</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Requests -->
+      <section id="tab-requests" class="tab">
+        <div class="card glass">
+          <div class="c-title" data-i18n="yourRequests">Your requests</div>
+          <div id="reqList" class="ops"></div>
+        </div>
+      </section>
+
+      <!-- Support -->
+      <section id="tab-support" class="tab">
+        <div class="card glass">
+          <div class="c-title" data-i18n="supportCenter">Support Center</div>
+          <p class="muted">WhatsApp: <a href="https://wa.me/message/P6BBPSDL2CC4D1" target="_blank">Open Chat</a></p>
+          <p class="muted">Telegram: <a href="https://t.me/QL_Support" target="_blank">@QL_Support</a></p>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Withdraw sheet -->
+  <div id="sheet" class="sheet">
+    <div class="handle"></div>
+    <div class="s-title" data-i18n="chooseMethod">Choose withdraw method</div>
+    <button class="s-item" data-method="usdt_trc20">USDT (TRC20)</button>
+    <button class="s-item" data-method="usdt_erc20">USDT (ERC20)</button>
+    <button class="s-item" data-method="btc">Bitcoin (BTC)</button>
+    <button class="s-item" data-method="eth">Ethereum (ETH)</button>
+    <button class="s-cancel" id="sCancel" data-i18n="cancel">Cancel</button>
+  </div>
+
+  <audio id="sndNotify" src="./notify.mp3" preload="auto"></audio>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

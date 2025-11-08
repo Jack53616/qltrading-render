@@ -1,0 +1,39 @@
+:root{
+  --bg:#0b0b12; --ink:#eef; --mut:#9aa0b7;
+  --card:#151528; --edge:#262647; --pri:#7c5cff;
+  --ok:#2ecc71; --bad:#e74c3c;
+}
+*{box-sizing:border-box} html,body{height:100%}
+body{margin:0;background:#0b0b12;color:var(--ink);font:15px/1.7 "Cairo",system-ui}
+.bg{position:fixed;inset:0;pointer-events:none;
+  background:
+    radial-gradient(800px 600px at 85% -10%, #4c3bd4 0%, transparent 60%),
+    radial-gradient(700px 500px at -10% 0%, #1b1730 0%, transparent 60%),
+    #0b0b12;}
+.top{position:sticky;top:0;z-index:4;padding:16px 18px;margin:0 0 10px}
+.glass{backdrop-filter: blur(12px); background: rgba(21,21,40,.6); border:1px solid rgba(124,92,255,.15); border-radius:18px; box-shadow:0 10px 40px rgba(0,0,0,.35)}
+.wrap{max-width:1100px;margin:18px auto;padding:12px}
+h1,h2{margin:0 0 10px}
+.badge{font-size:13px;color:#cfd3ff}
+.card{padding:18px; margin:0 0 14px}
+.row{display:flex;gap:10px;align-items:center}
+.input, .btn{padding:10px 12px;border-radius:12px;border:1px solid var(--edge);background:#101022;color:#fff}
+.btn{background:var(--pri);border-color:transparent;cursor:pointer}
+.btn:hover{filter:brightness(1.05)}
+.muted{color:var(--mut)}
+.hidden{display:none}
+.tabs{display:flex;gap:8px;padding:10px;margin-bottom:12px}
+.tabs .t{background:#211e3a;border:none;color:#fff;padding:10px 14px;border-radius:12px;cursor:pointer}
+.tabs .t.on{background:var(--pri)}
+.tab{display:none}.tab.show{display:block}
+.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px}
+.kpi{padding:16px;border-radius:16px;text-align:center}
+.kpi b{display:block;font-size:20px;margin-bottom:6px}
+.c-title{font-weight:700;margin-bottom:8px}
+.table{border:1px solid var(--edge);border-radius:16px;overflow:hidden}
+.table .row{display:grid;grid-template-columns:repeat(5,1fr);border-bottom:1px solid var(--edge)}
+.table .row>div{padding:10px 12px}
+.toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:#1b1833;color:#fff;padding:10px 16px;border-radius:12px;border:1px solid rgba(124,92,255,.3);opacity:0;pointer-events:none;transition:.25s}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(-6px)}
+@media (max-width:900px){ .grid{grid-template-columns:repeat(2,1fr)} .table .row{grid-template-columns:repeat(4,1fr)} }
+@media (max-width:600px){ .grid{grid-template-columns:1fr} }
