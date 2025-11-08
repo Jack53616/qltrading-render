@@ -1,4 +1,4 @@
-// QL Trading AI v2.1 FINAL — Server/API
+// QL Trading AI v2.2 — Server/API (CLEAN FINAL)
 import express from "express";
 import path from "path";
 import cors from "cors";
@@ -9,8 +9,10 @@ import fetch from "node-fetch";
 import jwt from "jsonwebtoken";
 import pkg from "pg";
 import bot from "./bot.js";
+
 const { Pool } = pkg;
 
+// ==================== INIT ====================
 dotenv.config();
 const startedAt = new Date().toISOString();
 console.log("🟢 Starting QL Trading AI Server...", startedAt);
@@ -24,36 +26,37 @@ const {
   DATABASE_URL,
   PORT = 10000,
   ADMIN_TOKEN = "ql_admin_2025",
-  JWT_SECRET = "ql_secret_2025"
+  JWT_SECRET = "ql_secret_2025",
+  WEBHOOK_URL
 } = process.env;
 
 if (!DATABASE_URL) {
-  console.error("DATABASE_URL missing");
+  console.error("❌ DATABASE_URL missing");
   process.exit(1);
 }
 
-const app = express();
-app.use(cors());
-app.use(bodyParser.json());
-app.use(express.static(__dirname));
-
+// ==================== DATABASE ====================
 const pool = new Pool({
   connectionString: DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 });
 
-
 async function q(sql, params = []) {
   const c = await pool.connect();
   try {
-    const r = await c.query(sql, params);
-    return r;
+    return await c.query(sql, params);
   } finally {
     c.release();
   }
 }
 
-// ---------- MIGRATIONS ----------
+// ==================== EXPRESS ====================
+const app = express();
+app.use(cors());
+app.use(bodyParser.json());
+app.use(express.static(__dirname));
+
+// ==================== MIGRATIONS ====================
 const DDL = `
 CREATE TABLE IF NOT EXISTS users (
   id SERIAL PRIMARY KEY,
@@ -118,43 +121,33 @@ CREATE TABLE IF NOT EXISTS daily_targets (
 `;
 
 app.post("/api/admin/migrate", async (req, res) => {
-  if (req.headers["x-admin-token"] !== ADMIN_TOKEN) {
+  if (req.headers["x-admin-token"] !== ADMIN_TOKEN)
     return res.status(403).json({ ok: false, error: "forbidden" });
-  }
   try {
     await q(DDL);
-    return res.json({ ok: true, msg: "migrated" });
+    res.json({ ok: true, msg: "migrated" });
   } catch (e) {
-    return res.json({ ok: false, error: e.message });
+    res.json({ ok: false, error: e.message });
   }
 });
 
-// ---------- AUTH ----------
+// ==================== AUTH ====================
 app.post("/api/token", (req, res) => {
   const { tg_id } = req.body || {};
-  if (!tg_id) return res.json({ ok: false, error: "missing tg_id" });
+  if (!tg_id) return res.json({ ok: false, error: "missing_tg_id" });
   const token = jwt.sign({ tg_id }, JWT_SECRET, { expiresIn: "30d" });
   res.json({ ok: true, token });
 });
 
-// ---------- SUBSCRIBE / ACTIVATE ----------
+// ==================== ACTIVATE ====================
 app.post("/api/activate", async (req, res) => {
   console.log("🔑 Activation request:", req?.body?.key, req?.body?.tg_id);
   try {
     const { key, tg_id, name = "", email = "" } = req.body || {};
-    if (!key || !tg_id) return res.json({ ok: false, error: "missing" });
+    if (!key || !tg_id) return res.json({ ok: false, error: "missing_parameters" });
 
-    // 🔍 تحقق من وجود المفتاح
-    const k = await q(`SELECT * FROM keys WHERE key_code=$1`, [key]).then(r => r.rows[0]);
-
-    // ✅ تحسين الرسائل: نعرف السبب
-    if (!k) {
-      const used = await q(`SELECT 1 FROM ops WHERE note LIKE $1 LIMIT 1`, [`%${key}%`]);
-      if (used.rowCount > 0) {
-        return res.json({ ok: false, error: "used_key" });
-      }
-      return res.json({ ok: false, error: "invalid_key" });
-    }
+    const k = await q(`SELECT * FROM keys WHERE LOWER(key_code)=LOWER($1)`, [key]).then(r => r.rows[0]);
+    if (!k) return res.json({ ok: false, error: "invalid_key" });
 
     const u = await q(
       `INSERT INTO users (tg_id, name, email, sub_expires, level)
@@ -165,56 +158,25 @@ app.post("/api/activate", async (req, res) => {
       [tg_id, name, email, k.days]
     ).then(r => r.rows[0]);
 
-    // نحذف المفتاح بعد التفعيل (مفتاح لمرة واحدة)
-    await q(`DELETE FROM keys WHERE key_code=$1`, [key]);
-    await q(`INSERT INTO ops (user_id, type, amount, note) VALUES ($1,'system',0,$2)`, [u.id, `activation:${key}`]);
+    await q(`DELETE FROM keys WHERE key_code=$1`, [k.key_code]);
+    console.log(`✅ User activated: ${u.name || "unknown"} (${tg_id})`);
     res.json({ ok: true, user: u });
   } catch (e) {
+    console.error("❌ Activation error:", e.message);
     res.json({ ok: false, error: e.message });
   }
 });
 
-// ---------- USER ----------
+// ==================== USER INFO ====================
 app.get("/api/user/:tg", async (req, res) => {
   try {
     const u = await q(`SELECT * FROM users WHERE tg_id=$1`, [req.params.tg]).then(r => r.rows[0]);
     if (!u) return res.json({ ok: false });
     res.json({ ok: true, user: u });
-  } catch (e) {
-    res.json({ ok: false, error: e.message });
-  }
-});
-
-// ---------- WITHDRAW ----------
-app.post("/api/withdraw/method", async (req, res) => {
-  try {
-    const { tg_id, method, addr } = req.body || {};
-    const u = await q(`SELECT * FROM users WHERE tg_id=$1`, [tg_id]).then(r => r.rows[0]);
-    if (!u) return res.json({ ok: false, error: "User not found" });
-    await q(`INSERT INTO ops (user_id, type, amount, note) VALUES ($1,'system',0,$2)`, [u.id, `withdraw_addr:${method}:${addr}`]);
-    res.json({ ok: true });
-  } catch (e) {
-    res.json({ ok: false, error: e.message });
-  }
-});
-
-app.post("/api/withdraw", async (req, res) => {
-  try {
-    const { tg_id, amount, method } = req.body || {};
-    const u = await q(`SELECT * FROM users WHERE tg_id=$1`, [tg_id]).then(r => r.rows[0]);
-    if (!u) return res.json({ ok: false, error: "User not found" });
-    if (Number(u.balance) < Number(amount)) return res.json({ ok: false, error: "Insufficient balance" });
-
-    await q(`UPDATE users SET balance = balance - $1 WHERE id=$2`, [amount, u.id]);
-    const r0 = await q(`INSERT INTO requests (user_id, amount, method, status) VALUES ($1,$2,$3,'pending') RETURNING *`,
-      [u.id, amount, method]).then(r => r.rows[0]);
-    await q(`INSERT INTO ops (user_id, type, amount, note) VALUES ($1,'withdraw',$2,$3)`,
-      [u.id, amount, `withdraw_request:${method}`]);
-    res.json({ ok: true, request: r0 });
   } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 
-// ---------- MARKETS ----------
+// ==================== MARKETS ====================
 app.get("/api/markets", async (_req, res) => {
   try {
     const pairs = [
@@ -240,28 +202,36 @@ app.get("/api/markets", async (_req, res) => {
   } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 
-// ---------- STATIC ----------
+// ==================== STATIC FRONTEND ====================
 app.get("*", (_req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
 });
 
-// ===== Telegram Webhook support =====
-const WEBHOOK_URL = process.env.WEBHOOK_URL || null;
-
+// ==================== TELEGRAM WEBHOOK ====================
 (async () => {
   try {
-    if (WEBHOOK_URL && bot && process.env.BOT_TOKEN) {
+    if (WEBHOOK_URL && process.env.BOT_TOKEN) {
       const hookUrl = `${WEBHOOK_URL}/webhook/${process.env.BOT_TOKEN}`;
-      console.log("✅ Setting Telegram webhook to", hookUrl);
       await bot.setWebHook(hookUrl);
+      console.log("✅ Telegram webhook set to:", hookUrl);
     } else {
-      console.log("⚠️ WEBHOOK_URL not set — bot will not set webhook here.");
+      console.log("⚠️ WEBHOOK_URL not set — running in local polling mode.");
+      await bot.startPolling();
+      console.log("📡 Telegram polling mode active (local)");
     }
   } catch (e) {
     console.error("❌ Webhook setup failed:", e.message);
+    console.log("🔁 Switching to polling mode...");
+    try {
+      await bot.startPolling();
+      console.log("✅ Polling started successfully");
+    } catch (err2) {
+      console.error("❌ Polling fallback failed:", err2.message);
+    }
   }
 })();
 
+// ==================== TELEGRAM UPDATES ====================
 app.post("/webhook/:token", async (req, res) => {
   try {
     const token = req.params.token;
@@ -275,6 +245,7 @@ app.post("/webhook/:token", async (req, res) => {
   }
 });
 
+// ==================== START SERVER ====================
 app.listen(PORT, () => {
-  console.log(`🟢 QL Trading AI server running on port ${PORT}`);
+  console.log(`🟢 QL Trading AI Server running on port ${PORT}`);
 });
