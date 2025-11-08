@@ -237,3 +237,5 @@ app.post("/webhook/:token", async (req, res) => {
 app.listen(PORT, () => {
   console.log(`🟢 QL Trading AI Server running on port ${PORT}`);
 });
+
+export default bot;
