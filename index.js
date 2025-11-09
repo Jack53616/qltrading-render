@@ -154,43 +154,71 @@ function normalizeKey(key = "") {
 
 async function findKeyByCandidates(candidates = []) {
   if (!candidates.length) return null;
-  const tried = new Set();
-
-  const fetchKey = async (whereClause, value) => {
-    return q(
-      `SELECT id, key_code, days, used_by, used_at, created_at
-         FROM keys
-        WHERE ${whereClause}
-        LIMIT 1`,
-      [value]
-    ).then(r => r.rows[0] || null);
-  };
-
-  for (const token of candidates) {
-    const sanitized = sanitizeToken(token);
-    if (!sanitized) continue;
-
-    const lower = sanitized.toLowerCase();
-    if (!tried.has(lower)) {
-      tried.add(lower);
-      const row = await fetchKey("LOWER(key_code) = $1", lower);
-      if (row) return row;
+  const lowered = [];
+  const collapsed = [];
+  const loweredSeen = new Set();
+  const collapsedSeen = new Set();
+  candidates.forEach(token => {
+    if (!token) return;
+    const lower = token.toLowerCase();
+    if (!loweredSeen.has(lower)) {
+      loweredSeen.add(lower);
+      lowered.push(lower);
     }
+    const collapsedToken = sanitizedCollapsed(token)?.toLowerCase();
+    if (collapsedToken && !collapsedSeen.has(collapsedToken)) {
+      collapsedSeen.add(collapsedToken);
+      collapsed.push(collapsedToken);
+    }
+  });
+  if (!lowered.length && !collapsed.length) return null;
 
-    const collapsed = sanitizedCollapsed(sanitized);
-    if (!collapsed) continue;
-    const collapsedLower = collapsed.toLowerCase();
-    const collapsedKey = `collapsed:${collapsedLower}`;
-    if (tried.has(collapsedKey)) continue;
-    tried.add(collapsedKey);
-    const collapsedRow = await fetchKey(
-      "LOWER(REGEXP_REPLACE(key_code, '[^A-Za-z0-9._\\-+=]+', '', 'g')) = $1",
-      collapsedLower
+  const params = [];
+  const whereClauses = [];
+  if (lowered.length) {
+    params.push(lowered);
+    whereClauses.push(`LOWER(key_code) = ANY($${params.length}::text[])`);
+  }
+  if (collapsed.length) {
+    params.push(collapsed);
+    whereClauses.push(
+      `LOWER(REGEXP_REPLACE(key_code, '[^A-Za-z0-9._\\-+=]+', '', 'g')) = ANY($${params.length}::text[])`
     );
-    if (collapsedRow) return collapsedRow;
   }
 
-  return null;
+  const rows = await q(
+    `SELECT id, key_code, days, used_by, used_at, created_at,
+            LOWER(key_code) AS lower_code,
+            LOWER(REGEXP_REPLACE(key_code, '[^A-Za-z0-9._\\-+=]+', '', 'g')) AS collapsed_code
+       FROM keys
+      WHERE ${whereClauses.join(" OR ")}`,
+    params
+  ).then(r => r.rows);
+  if (!rows.length) return null;
+
+  const order = new Map();
+  lowered.forEach((token, idx) => {
+    if (!order.has(token)) order.set(token, idx);
+  });
+  const collapsedOrder = new Map();
+  collapsed.forEach((token, idx) => {
+    if (!collapsedOrder.has(token)) collapsedOrder.set(token, idx);
+  });
+
+  const rank = (row) => {
+    const lowerCode = String(row.lower_code || "");
+    const collapsedCode = String(row.collapsed_code || "");
+    const lowerIdx = order.has(lowerCode)
+      ? order.get(lowerCode)
+      : Number.MAX_SAFE_INTEGER;
+    const collapsedIdx = collapsedOrder.has(collapsedCode)
+      ? collapsedOrder.get(collapsedCode)
+      : Number.MAX_SAFE_INTEGER;
+    return Math.min(lowerIdx, collapsedIdx);
+  };
+
+  rows.sort((a, b) => rank(a) - rank(b));
+  return rows[0] || null;
 }
 
 function ensureAdmin(req, res, next) {
@@ -320,22 +348,8 @@ app.post("/api/token", (req, res) => {
 app.post("/api/activate", async (req, res) => {
   console.log("🔑 Activation request:", req?.body?.key, req?.body?.tg_id);
   try {
-    const { key, rawKey, tg_id, name = "", email = "", initData } = req.body || {};
-    const candidateSources = [rawKey, key];
-    const keyCandidates = [];
-    const seenCandidates = new Set();
-    candidateSources.forEach(source => {
-      extractKeyCandidates(source || "").forEach(token => {
-        const lower = token.toLowerCase();
-        if (seenCandidates.has(lower)) return;
-        seenCandidates.add(lower);
-        keyCandidates.push(token);
-      });
-    });
-    if (!keyCandidates.length) {
-      const fallback = normalizeKey(key || rawKey || "");
-      if (fallback) keyCandidates.push(fallback);
-    }
+    const { key, tg_id, name = "", email = "", initData } = req.body || {};
+    const keyCandidates = extractKeyCandidates(key || "");
     const normalizedKey = keyCandidates[0] || "";
     const tgId = String(tg_id || "").trim();
     if (!normalizedKey || !tgId) {
