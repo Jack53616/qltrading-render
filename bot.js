@@ -18,6 +18,14 @@ const pool = new Pool({
   ssl: process.env.PGSSLMODE ? { rejectUnauthorized: false } : false
 });
 
+const INVISIBLE_CHARS = /[\u0000-\u001F\u007F-\u009F\u200B-\u200F\u202A-\u202E\u2066-\u2069]/g;
+
+const cleanKey = (key = "") =>
+  key
+    .normalize("NFKC")
+    .replace(INVISIBLE_CHARS, "")
+    .trim();
+
 async function q(sql, params = []) {
   const c = await pool.connect();
   try { return await c.query(sql, params); } finally { c.release(); }
@@ -60,7 +68,8 @@ bot.onText(/^\/help$/, (msg) => {
 // إنشاء مفتاح
 bot.onText(/^\/create_key\s+(\S+)(?:\s+(\d+))?$/, async (msg, m) => {
   if (!isAdmin(msg)) return;
-  const key = m[1]; const days = Number(m[2] || 30);
+  const key = cleanKey(m[1]); const days = Number(m[2] || 30);
+  if (!key) return bot.sendMessage(msg.chat.id, "❌ Invalid key format");
   try {
     await q(`INSERT INTO keys (key_code, days) VALUES ($1,$2)`, [key, days]);
     console.log("🧩 New key created:", key, days, "days");

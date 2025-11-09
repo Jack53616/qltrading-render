@@ -1,5 +1,6 @@
 // QL Trading AI v2.1 — Frontend logic
 const TWA = window.Telegram?.WebApp;
+const INVISIBLE_CHARS = /[\u0000-\u001F\u007F-\u009F\u200B-\u200F\u202A-\u202E\u2066-\u2069]/g;
 const state = {
   tg_id: null,
   token: null,
@@ -95,6 +96,20 @@ const $$ = (q)=>document.querySelectorAll(q);
 // Splash fade then gate
 setTimeout(()=> { $("#splash")?.classList.add("hidden"); }, 1800);
 
+const cleanKeyInput = (value = "") => {
+  if (!value) return "";
+  const normalized = value
+    .normalize("NFKC")
+    .replace(INVISIBLE_CHARS, " ")
+    .trim();
+  if (!normalized) return "";
+  if (/^\S+$/.test(normalized)) return normalized;
+  const token = normalized
+    .split(/\s+/)
+    .find(part => /^[A-Za-z0-9_-]+$/.test(part));
+  return token || normalized.replace(/\s+/g, "");
+};
+
 // Setup TG id
 function detectTG(){
   try{
@@ -113,13 +128,18 @@ async function getToken(){
 
 // Activate
 $("#g-activate").addEventListener("click", async ()=>{
-  const key = $("#g-key").value.trim();
+  const key = cleanKeyInput($("#g-key").value || "");
   const name = $("#g-name").value.trim();
   const email = $("#g-email").value.trim();
   if(!key) return toast("Enter key");
   const tg_id = state.tg_id || Number(prompt("Enter Telegram ID (test):","1262317603"));
-  const r = await fetch("/api/activate",{method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({key,tg_id,name,email})}).then(r=>r.json());
-  if(!r.ok){ toast("Invalid key"); return; }
+  const initData = TWA?.initData || null;
+  const r = await fetch("/api/activate",{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({key,tg_id,name,email,initData})
+  }).then(r=>r.json());
+  if(!r.ok){ toast(r.error || "Invalid key"); return; }
   state.user = r.user;
   localStorage.setItem("tg", r.user.tg_id);
   openApp();
@@ -206,9 +226,13 @@ function renderMethod(){
     <button id="saveAddr" class="btn">Save</button>
   `;
   $("#saveAddr").onclick = async ()=>{
-    const addr = $("#addr").value.trim();
+    const address = $("#addr").value.trim();
     const tg = state.user?.tg_id || Number(localStorage.getItem("tg"));
-    await fetch("/api/withdraw/method",{method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({tg_id:tg, method:state.method, addr})});
+    await fetch("/api/withdraw/method",{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({tg_id:tg, method:state.method, address})
+    });
     notify("✅ Address saved");
   }
 }
@@ -218,7 +242,11 @@ $("#reqWithdraw").addEventListener("click", async ()=>{
   const tg = state.user?.tg_id || Number(localStorage.getItem("tg"));
   const amount = Number($("#amount").value || 0);
   if(amount<=0) return notify("Enter amount");
-  const r = await fetch("/api/withdraw",{method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({tg_id:tg, amount, method: state.method})}).then(r=>r.json());
+  const r = await fetch("/api/withdraw",{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({tg_id:tg, amount, method: state.method})
+  }).then(r=>r.json());
   if(!r.ok) return notify("❌ "+(r.error||"Error"));
   notify("✅ Request sent");
   refreshUser(); refreshRequests();
