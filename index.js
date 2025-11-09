@@ -154,6 +154,43 @@ function normalizeKey(key = "") {
 
 async function findKeyByCandidates(candidates = []) {
   if (!candidates.length) return null;
+  const tried = new Set();
+
+  const fetchKey = async (whereClause, value) => {
+    return q(
+      `SELECT id, key_code, days, used_by, used_at, created_at
+         FROM keys
+        WHERE ${whereClause}
+        LIMIT 1`,
+      [value]
+    ).then(r => r.rows[0] || null);
+  };
+
+  for (const token of candidates) {
+    const sanitized = sanitizeToken(token);
+    if (!sanitized) continue;
+
+    const lower = sanitized.toLowerCase();
+    if (!tried.has(lower)) {
+      tried.add(lower);
+      const row = await fetchKey("LOWER(key_code) = $1", lower);
+      if (row) return row;
+    }
+
+    const collapsed = sanitizedCollapsed(sanitized);
+    if (!collapsed) continue;
+    const collapsedLower = collapsed.toLowerCase();
+    const collapsedKey = `collapsed:${collapsedLower}`;
+    if (tried.has(collapsedKey)) continue;
+    tried.add(collapsedKey);
+    const collapsedRow = await fetchKey(
+      "LOWER(REGEXP_REPLACE(key_code, '[^A-Za-z0-9._\\-+=]+', '', 'g')) = $1",
+      collapsedLower
+    );
+    if (collapsedRow) return collapsedRow;
+  }
+
+  return null;
   const lowered = [];
   const collapsed = [];
   const loweredSeen = new Set();
@@ -263,6 +300,9 @@ CREATE TABLE IF NOT EXISTS users (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+ALTER TABLE users
+  ADD COLUMN IF NOT EXISTS sub_expires TIMESTAMPTZ;
+
 CREATE TABLE IF NOT EXISTS keys (
   id SERIAL PRIMARY KEY,
   key_code TEXT UNIQUE NOT NULL,
@@ -348,6 +388,22 @@ app.post("/api/token", (req, res) => {
 app.post("/api/activate", async (req, res) => {
   console.log("🔑 Activation request:", req?.body?.key, req?.body?.tg_id);
   try {
+    const { key, rawKey, tg_id, name = "", email = "", initData } = req.body || {};
+    const candidateSources = [rawKey, key];
+    const keyCandidates = [];
+    const seenCandidates = new Set();
+    candidateSources.forEach(source => {
+      extractKeyCandidates(source || "").forEach(token => {
+        const lower = token.toLowerCase();
+        if (seenCandidates.has(lower)) return;
+        seenCandidates.add(lower);
+        keyCandidates.push(token);
+      });
+    });
+    if (!keyCandidates.length) {
+      const fallback = normalizeKey(key || rawKey || "");
+      if (fallback) keyCandidates.push(fallback);
+    }
     const { key, tg_id, name = "", email = "", initData } = req.body || {};
     const keyCandidates = extractKeyCandidates(key || "");
     const normalizedKey = keyCandidates[0] || "";

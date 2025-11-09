@@ -212,6 +212,9 @@ async function getToken(){
 
 // Activate
 $("#g-activate").addEventListener("click", async ()=>{
+  const rawKey = $("#g-key").value || "";
+  const candidates = extractKeyCandidates(rawKey);
+  const key = candidates[0] || cleanKeyInput(rawKey);
   const key = cleanKeyInput($("#g-key").value || "");
   const name = $("#g-name").value.trim();
   const email = $("#g-email").value.trim();
@@ -221,6 +224,7 @@ $("#g-activate").addEventListener("click", async ()=>{
   const r = await fetch("/api/activate",{
     method:"POST",
     headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({key, rawKey, tg_id, name, email, initData})
     body:JSON.stringify({key,tg_id,name,email,initData})
   }).then(r=>r.json());
   if(!r.ok){ toast(r.error || "Invalid key"); return; }
