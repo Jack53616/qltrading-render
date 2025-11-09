@@ -28,11 +28,15 @@ const cleanKey = (key = "") => {
     .trim();
   if (!normalized) return "";
   if (/^[A-Za-z0-9_-]+$/.test(normalized)) return normalized;
-  const token = normalized
+  const parts = normalized
     .split(/[\s:|,;/\\]+/)
     .map(part => part.trim())
-    .find(part => /^[A-Za-z0-9_-]+$/.test(part));
-  return token || normalized.replace(/\s+/g, "");
+    .filter(Boolean);
+  const preferred = parts.find(part => /^[A-Za-z0-9_-]+$/.test(part) && /[0-9]/.test(part));
+  if (preferred) return preferred;
+  const fallback = parts.find(part => /^[A-Za-z0-9_-]+$/.test(part));
+  if (fallback) return fallback;
+  return normalized.replace(/[^A-Za-z0-9_-]+/g, "");
 };
 
 async function q(sql, params = []) {
