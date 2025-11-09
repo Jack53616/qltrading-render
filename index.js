@@ -49,8 +49,176 @@ async function getUserByTelegramId(tgId) {
   return q(`SELECT * FROM users WHERE tg_id=$1`, [tgId]).then(r => r.rows[0] || null);
 }
 
+const INVISIBLE_CHARS = /[\u0000-\u001F\u007F-\u009F\u200B-\u200F\u202A-\u202E\u2066-\u2069]/g;
+const VALID_KEY_CHARS = /^[A-Za-z0-9._\-+=]+$/;
+const KEY_FRAGMENT_RE = /[A-Za-z0-9][A-Za-z0-9._\-+=]{3,}[A-Za-z0-9=]?/g;
+const BANNED_KEY_WORDS = new Set([
+  "key", "code", "subscription", "subs", "sub", "token", "pass", "password",
+  "link", "your", "this", "that", "here", "is", "for", "the", "my",
+  "http", "https", "www", "click", "press", "bot"
+]);
+
+function scoreToken(token) {
+  const lower = token.toLowerCase();
+  let score = 0;
+  if (/[0-9]/.test(token)) score += 6;
+  if (/[-_]/.test(token)) score += 2;
+  if (/[+=]/.test(token)) score += 1;
+  if (token.length >= 28) score += 6;
+  else if (token.length >= 20) score += 5;
+  else if (token.length >= 16) score += 4;
+  else if (token.length >= 12) score += 3;
+  else if (token.length >= 8) score += 2;
+  else if (token.length >= 6) score += 1;
+  if (token.length > 64) score -= Math.min(token.length - 64, 12);
+  if (BANNED_KEY_WORDS.has(lower)) score -= 12;
+  if (/^https?:/i.test(token)) score -= 15;
+  return score;
+}
+
+function sanitizeToken(candidate = "") {
+  if (!candidate) return "";
+  let token = candidate
+    .replace(INVISIBLE_CHARS, "")
+    .trim();
+  if (!token) return "";
+  token = token.replace(/^[^A-Za-z0-9]+/, "").replace(/[^A-Za-z0-9=]+$/, "");
+  if (!token) return "";
+  if (!VALID_KEY_CHARS.test(token)) {
+    token = token.replace(/[^A-Za-z0-9._\-+=]+/g, "");
+  }
+  if (token.length < 4) return "";
+  return token;
+}
+
+function extractKeyCandidates(raw = "") {
+  if (!raw) return [];
+  const normalized = raw.normalize("NFKC").replace(INVISIBLE_CHARS, " ").trim();
+  if (!normalized) return [];
+  const seen = new Map();
+  const candidates = [];
+
+  const register = (token) => {
+    const sanitized = sanitizeToken(token);
+    if (!sanitized) return;
+    const key = sanitized.toLowerCase();
+    if (seen.has(key)) return;
+    const score = scoreToken(sanitized);
+    seen.set(key, score);
+    candidates.push({ token: sanitized, score, idx: candidates.length });
+  };
+
+  const pushMatches = (text) => {
+    if (!text) return;
+    const matches = text.match(KEY_FRAGMENT_RE);
+    if (matches) matches.forEach(register);
+  };
+
+  pushMatches(normalized);
+
+  normalized
+    .split(/[\s|,;:/\\]+/)
+    .map(part => part.trim())
+    .filter(Boolean)
+    .forEach(part => {
+      register(part);
+      const eqIndex = part.indexOf("=");
+      if (eqIndex >= 0 && eqIndex < part.length - 1) {
+        register(part.slice(eqIndex + 1));
+      }
+      pushMatches(part);
+    });
+
+  const collapsed = sanitizedCollapsed(normalized);
+  if (collapsed) register(collapsed);
+
+  candidates.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    if (b.token.length !== a.token.length) return b.token.length - a.token.length;
+    return a.idx - b.idx;
+  });
+
+  return candidates.map(c => c.token);
+}
+
+function sanitizedCollapsed(text = "") {
+  if (!text) return "";
+  const collapsed = text.replace(/[^A-Za-z0-9._\-+=]+/g, "");
+  return collapsed.length >= 4 ? collapsed : "";
+}
+
 function normalizeKey(key = "") {
-  return key.trim();
+  const candidates = extractKeyCandidates(key);
+  return candidates[0] || "";
+}
+
+async function findKeyByCandidates(candidates = []) {
+  if (!candidates.length) return null;
+  const lowered = [];
+  const collapsed = [];
+  const loweredSeen = new Set();
+  const collapsedSeen = new Set();
+  candidates.forEach(token => {
+    if (!token) return;
+    const lower = token.toLowerCase();
+    if (!loweredSeen.has(lower)) {
+      loweredSeen.add(lower);
+      lowered.push(lower);
+    }
+    const collapsedToken = sanitizedCollapsed(token)?.toLowerCase();
+    if (collapsedToken && !collapsedSeen.has(collapsedToken)) {
+      collapsedSeen.add(collapsedToken);
+      collapsed.push(collapsedToken);
+    }
+  });
+  if (!lowered.length && !collapsed.length) return null;
+
+  const params = [];
+  const whereClauses = [];
+  if (lowered.length) {
+    params.push(lowered);
+    whereClauses.push(`LOWER(key_code) = ANY($${params.length}::text[])`);
+  }
+  if (collapsed.length) {
+    params.push(collapsed);
+    whereClauses.push(
+      `LOWER(REGEXP_REPLACE(key_code, '[^A-Za-z0-9._\\-+=]+', '', 'g')) = ANY($${params.length}::text[])`
+    );
+  }
+
+  const rows = await q(
+    `SELECT id, key_code, days, used_by, used_at, created_at,
+            LOWER(key_code) AS lower_code,
+            LOWER(REGEXP_REPLACE(key_code, '[^A-Za-z0-9._\\-+=]+', '', 'g')) AS collapsed_code
+       FROM keys
+      WHERE ${whereClauses.join(" OR ")}`,
+    params
+  ).then(r => r.rows);
+  if (!rows.length) return null;
+
+  const order = new Map();
+  lowered.forEach((token, idx) => {
+    if (!order.has(token)) order.set(token, idx);
+  });
+  const collapsedOrder = new Map();
+  collapsed.forEach((token, idx) => {
+    if (!collapsedOrder.has(token)) collapsedOrder.set(token, idx);
+  });
+
+  const rank = (row) => {
+    const lowerCode = String(row.lower_code || "");
+    const collapsedCode = String(row.collapsed_code || "");
+    const lowerIdx = order.has(lowerCode)
+      ? order.get(lowerCode)
+      : Number.MAX_SAFE_INTEGER;
+    const collapsedIdx = collapsedOrder.has(collapsedCode)
+      ? collapsedOrder.get(collapsedCode)
+      : Number.MAX_SAFE_INTEGER;
+    return Math.min(lowerIdx, collapsedIdx);
+  };
+
+  rows.sort((a, b) => rank(a) - rank(b));
+  return rows[0] || null;
 }
 
 function ensureAdmin(req, res, next) {
@@ -181,7 +349,8 @@ app.post("/api/activate", async (req, res) => {
   console.log("🔑 Activation request:", req?.body?.key, req?.body?.tg_id);
   try {
     const { key, tg_id, name = "", email = "", initData } = req.body || {};
-    const normalizedKey = normalizeKey(key || "");
+    const keyCandidates = extractKeyCandidates(key || "");
+    const normalizedKey = keyCandidates[0] || "";
     const tgId = String(tg_id || "").trim();
     if (!normalizedKey || !tgId) {
       return res.json({ ok: false, error: "missing_parameters" });
@@ -198,8 +367,7 @@ app.post("/api/activate", async (req, res) => {
     }
 
     const existingUser = await getUserByTelegramId(tgId);
-    const keyRow = await q(`SELECT * FROM keys WHERE LOWER(key_code)=LOWER($1)`, [normalizedKey])
-      .then(r => r.rows[0] || null);
+    const keyRow = await findKeyByCandidates(keyCandidates);
 
     if (!keyRow) {
       if (existingUser && sessionVerified) {
