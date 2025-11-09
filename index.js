@@ -55,12 +55,13 @@ function normalizeKey(key = "") {
   if (!key) return "";
   const normalized = key
     .normalize("NFKC")
-    .replace(INVISIBLE_CHARS, " ")
+    .replace(INVISIBLE_CHARS, "")
     .trim();
   if (!normalized) return "";
-  if (/^\S+$/.test(normalized)) return normalized;
+  if (/^[A-Za-z0-9_-]+$/.test(normalized)) return normalized;
   const token = normalized
-    .split(/\s+/)
+    .split(/[\s:|,;/\\]+/)
+    .map(part => part.trim())
     .find(part => /^[A-Za-z0-9_-]+$/.test(part));
   return token || normalized.replace(/\s+/g, "");
 }

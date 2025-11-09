@@ -20,11 +20,20 @@ const pool = new Pool({
 
 const INVISIBLE_CHARS = /[\u0000-\u001F\u007F-\u009F\u200B-\u200F\u202A-\u202E\u2066-\u2069]/g;
 
-const cleanKey = (key = "") =>
-  key
+const cleanKey = (key = "") => {
+  if (!key) return "";
+  const normalized = key
     .normalize("NFKC")
     .replace(INVISIBLE_CHARS, "")
     .trim();
+  if (!normalized) return "";
+  if (/^[A-Za-z0-9_-]+$/.test(normalized)) return normalized;
+  const token = normalized
+    .split(/[\s:|,;/\\]+/)
+    .map(part => part.trim())
+    .find(part => /^[A-Za-z0-9_-]+$/.test(part));
+  return token || normalized.replace(/\s+/g, "");
+};
 
 async function q(sql, params = []) {
   const c = await pool.connect();
