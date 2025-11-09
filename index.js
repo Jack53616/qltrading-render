@@ -50,6 +50,33 @@ async function getUserByTelegramId(tgId) {
 }
 
 const INVISIBLE_CHARS = /[\u0000-\u001F\u007F-\u009F\u200B-\u200F\u202A-\u202E\u2066-\u2069]/g;
+const BANNED_KEY_WORDS = new Set([
+  "key", "code", "subscription", "subs", "sub", "token", "pass", "password",
+  "link", "your", "this", "that", "here", "is", "for", "the", "my"
+]);
+
+function pickTokenCandidate(parts) {
+  const tokens = parts.filter(part => /^[A-Za-z0-9_-]+$/.test(part));
+  if (!tokens.length) return "";
+  const scored = tokens.map(token => {
+    const lower = token.toLowerCase();
+    let score = 0;
+    if (/[0-9]/.test(token)) score += 6;
+    if (/[-_]/.test(token)) score += 2;
+    if (token.length >= 16) score += 4;
+    else if (token.length >= 10) score += 3;
+    else if (token.length >= 6) score += 2;
+    else if (token.length >= 4) score += 1;
+    if (BANNED_KEY_WORDS.has(lower)) score -= 8;
+    return { token, score, len: token.length };
+  });
+  scored.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    if (b.len !== a.len) return b.len - a.len;
+    return tokens.indexOf(a.token) - tokens.indexOf(b.token);
+  });
+  return scored[0]?.token || "";
+}
 
 function normalizeKey(key = "") {
   if (!key) return "";
@@ -63,10 +90,8 @@ function normalizeKey(key = "") {
     .split(/[\s:|,;/\\]+/)
     .map(part => part.trim())
     .filter(Boolean);
-  const preferred = parts.find(part => /^[A-Za-z0-9_-]+$/.test(part) && /[0-9]/.test(part));
+  const preferred = pickTokenCandidate(parts);
   if (preferred) return preferred;
-  const fallback = parts.find(part => /^[A-Za-z0-9_-]+$/.test(part));
-  if (fallback) return fallback;
   return normalized.replace(/[^A-Za-z0-9_-]+/g, "");
 }
 
