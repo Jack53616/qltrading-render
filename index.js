@@ -60,19 +60,37 @@ const BANNED_KEY_WORDS = new Set([
 
 function scoreToken(token) {
   const lower = token.toLowerCase();
+  const length = token.length;
+  const digitCount = (token.match(/\d/g) || []).length;
+  const letterCount = (token.match(/[A-Za-z]/g) || []).length;
+
   let score = 0;
-  if (/[0-9]/.test(token)) score += 6;
+  if (digitCount) score += 6;
   if (/[-_]/.test(token)) score += 2;
   if (/[+=]/.test(token)) score += 1;
-  if (token.length >= 28) score += 6;
-  else if (token.length >= 20) score += 5;
-  else if (token.length >= 16) score += 4;
-  else if (token.length >= 12) score += 3;
-  else if (token.length >= 8) score += 2;
-  else if (token.length >= 6) score += 1;
-  if (token.length > 64) score -= Math.min(token.length - 64, 12);
+  if (digitCount && letterCount) score += 2;
+  if (length >= 28) score += 6;
+  else if (length >= 20) score += 5;
+  else if (length >= 16) score += 4;
+  else if (length >= 12) score += 3;
+  else if (length >= 8) score += 2;
+  else if (length >= 6) score += 1;
+
+  const digitRatio = length ? digitCount / length : 0;
+  if (digitRatio >= 0.5) score += 4;
+  else if (digitRatio >= 0.35) score += 2;
+
+  const upperCount = (token.match(/[A-Z]/g) || []).length;
+  if (upperCount >= 4 && letterCount) score += 1;
+
+  if (length > 32) score -= Math.min(length - 32, 12);
+  if (length > 64) score -= Math.min(length - 64, 12);
+
   if (BANNED_KEY_WORDS.has(lower)) score -= 12;
-  if (/^https?:/i.test(token)) score -= 15;
+  if (lower.includes("http") || lower.includes("www") || lower.includes("tme")) score -= 15;
+  if (lower.includes("telegram")) score -= 8;
+  if (lower.includes("start=")) score -= 6;
+
   return score;
 }
 
@@ -98,39 +116,42 @@ function extractKeyCandidates(raw = "") {
   const seen = new Map();
   const candidates = [];
 
-  const register = (token) => {
+  const register = (token, boost = 0) => {
     const sanitized = sanitizeToken(token);
     if (!sanitized) return;
-    const key = sanitized.toLowerCase();
-    if (seen.has(key)) return;
-    const score = scoreToken(sanitized);
-    seen.set(key, score);
+    const fingerprint = sanitized.toLowerCase();
+    if (seen.has(fingerprint)) return;
+    const score = scoreToken(sanitized) + boost;
+    seen.set(fingerprint, score);
     candidates.push({ token: sanitized, score, idx: candidates.length });
   };
 
-  const pushMatches = (text) => {
+  const pushMatches = (text, boost = 0) => {
     if (!text) return;
     const matches = text.match(KEY_FRAGMENT_RE);
-    if (matches) matches.forEach(register);
+    if (matches) matches.forEach(match => register(match, boost));
   };
 
-  pushMatches(normalized);
+  pushMatches(normalized, 1);
+
+  const startMatch = normalized.match(/start=([A-Za-z0-9._\-+=]+)/i);
+  if (startMatch) register(startMatch[1], 6);
 
   normalized
     .split(/[\s|,;:/\\]+/)
     .map(part => part.trim())
     .filter(Boolean)
     .forEach(part => {
-      register(part);
       const eqIndex = part.indexOf("=");
       if (eqIndex >= 0 && eqIndex < part.length - 1) {
-        register(part.slice(eqIndex + 1));
+        register(part.slice(eqIndex + 1), 5);
       }
+      register(part);
       pushMatches(part);
     });
 
   const collapsed = sanitizedCollapsed(normalized);
-  if (collapsed) register(collapsed);
+  if (collapsed) register(collapsed, 3);
 
   candidates.sort((a, b) => {
     if (b.score !== a.score) return b.score - a.score;
@@ -191,71 +212,6 @@ async function findKeyByCandidates(candidates = []) {
   }
 
   return null;
-  const lowered = [];
-  const collapsed = [];
-  const loweredSeen = new Set();
-  const collapsedSeen = new Set();
-  candidates.forEach(token => {
-    if (!token) return;
-    const lower = token.toLowerCase();
-    if (!loweredSeen.has(lower)) {
-      loweredSeen.add(lower);
-      lowered.push(lower);
-    }
-    const collapsedToken = sanitizedCollapsed(token)?.toLowerCase();
-    if (collapsedToken && !collapsedSeen.has(collapsedToken)) {
-      collapsedSeen.add(collapsedToken);
-      collapsed.push(collapsedToken);
-    }
-  });
-  if (!lowered.length && !collapsed.length) return null;
-
-  const params = [];
-  const whereClauses = [];
-  if (lowered.length) {
-    params.push(lowered);
-    whereClauses.push(`LOWER(key_code) = ANY($${params.length}::text[])`);
-  }
-  if (collapsed.length) {
-    params.push(collapsed);
-    whereClauses.push(
-      `LOWER(REGEXP_REPLACE(key_code, '[^A-Za-z0-9._\\-+=]+', '', 'g')) = ANY($${params.length}::text[])`
-    );
-  }
-
-  const rows = await q(
-    `SELECT id, key_code, days, used_by, used_at, created_at,
-            LOWER(key_code) AS lower_code,
-            LOWER(REGEXP_REPLACE(key_code, '[^A-Za-z0-9._\\-+=]+', '', 'g')) AS collapsed_code
-       FROM keys
-      WHERE ${whereClauses.join(" OR ")}`,
-    params
-  ).then(r => r.rows);
-  if (!rows.length) return null;
-
-  const order = new Map();
-  lowered.forEach((token, idx) => {
-    if (!order.has(token)) order.set(token, idx);
-  });
-  const collapsedOrder = new Map();
-  collapsed.forEach((token, idx) => {
-    if (!collapsedOrder.has(token)) collapsedOrder.set(token, idx);
-  });
-
-  const rank = (row) => {
-    const lowerCode = String(row.lower_code || "");
-    const collapsedCode = String(row.collapsed_code || "");
-    const lowerIdx = order.has(lowerCode)
-      ? order.get(lowerCode)
-      : Number.MAX_SAFE_INTEGER;
-    const collapsedIdx = collapsedOrder.has(collapsedCode)
-      ? collapsedOrder.get(collapsedCode)
-      : Number.MAX_SAFE_INTEGER;
-    return Math.min(lowerIdx, collapsedIdx);
-  };
-
-  rows.sort((a, b) => rank(a) - rank(b));
-  return rows[0] || null;
 }
 
 function ensureAdmin(req, res, next) {
@@ -388,8 +344,15 @@ app.post("/api/token", (req, res) => {
 app.post("/api/activate", async (req, res) => {
   console.log("🔑 Activation request:", req?.body?.key, req?.body?.tg_id);
   try {
-    const { key, rawKey, tg_id, name = "", email = "", initData } = req.body || {};
-    const candidateSources = [rawKey, key];
+    const body = req.body || {};
+    const submittedKey = body.key;
+    const rawKey = body.rawKey;
+    const tg_id = body.tg_id;
+    const name = body.name ?? "";
+    const email = body.email ?? "";
+    const initData = body.initData;
+
+    const candidateSources = [rawKey, submittedKey];
     const keyCandidates = [];
     const seenCandidates = new Set();
     candidateSources.forEach(source => {
@@ -401,11 +364,9 @@ app.post("/api/activate", async (req, res) => {
       });
     });
     if (!keyCandidates.length) {
-      const fallback = normalizeKey(key || rawKey || "");
+      const fallback = normalizeKey(submittedKey || rawKey || "");
       if (fallback) keyCandidates.push(fallback);
     }
-    const { key, tg_id, name = "", email = "", initData } = req.body || {};
-    const keyCandidates = extractKeyCandidates(key || "");
     const normalizedKey = keyCandidates[0] || "";
     const tgId = String(tg_id || "").trim();
     if (!normalizedKey || !tgId) {
