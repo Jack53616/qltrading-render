@@ -118,8 +118,13 @@ $("#g-activate").addEventListener("click", async ()=>{
   const email = $("#g-email").value.trim();
   if(!key) return toast("Enter key");
   const tg_id = state.tg_id || Number(prompt("Enter Telegram ID (test):","1262317603"));
-  const r = await fetch("/api/activate",{method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({key,tg_id,name,email})}).then(r=>r.json());
-  if(!r.ok){ toast("Invalid key"); return; }
+  const initData = TWA?.initData || null;
+  const r = await fetch("/api/activate",{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({key,tg_id,name,email,initData})
+  }).then(r=>r.json());
+  if(!r.ok){ toast(r.error || "Invalid key"); return; }
   state.user = r.user;
   localStorage.setItem("tg", r.user.tg_id);
   openApp();
@@ -206,9 +211,13 @@ function renderMethod(){
     <button id="saveAddr" class="btn">Save</button>
   `;
   $("#saveAddr").onclick = async ()=>{
-    const addr = $("#addr").value.trim();
+    const address = $("#addr").value.trim();
     const tg = state.user?.tg_id || Number(localStorage.getItem("tg"));
-    await fetch("/api/withdraw/method",{method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({tg_id:tg, method:state.method, addr})});
+    await fetch("/api/withdraw/method",{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({tg_id:tg, method:state.method, address})
+    });
     notify("✅ Address saved");
   }
 }
@@ -218,7 +227,11 @@ $("#reqWithdraw").addEventListener("click", async ()=>{
   const tg = state.user?.tg_id || Number(localStorage.getItem("tg"));
   const amount = Number($("#amount").value || 0);
   if(amount<=0) return notify("Enter amount");
-  const r = await fetch("/api/withdraw",{method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({tg_id:tg, amount, method: state.method})}).then(r=>r.json());
+  const r = await fetch("/api/withdraw",{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({tg_id:tg, amount, method: state.method})
+  }).then(r=>r.json());
   if(!r.ok) return notify("❌ "+(r.error||"Error"));
   notify("✅ Request sent");
   refreshUser(); refreshRequests();
