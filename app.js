@@ -6,7 +6,7 @@ const KEY_FRAGMENT_RE = /[A-Za-z0-9][A-Za-z0-9._\-+=]{3,}[A-Za-z0-9=]?/g;
 const BANNED_KEY_WORDS = new Set([
   "key", "code", "subscription", "subs", "sub", "token", "pass", "password",
   "link", "your", "this", "that", "here", "is", "for", "the", "my",
-  "http", "https", "www", "click", "press", "bot"
+  "http", "https", "www", "click", "press", "bot", "created", "generated"
 ]);
 
 const scoreToken = (token) => {
@@ -38,6 +38,8 @@ const scoreToken = (token) => {
   if (length > 64) score -= Math.min(length - 64, 12);
 
   if (BANNED_KEY_WORDS.has(lower)) score -= 12;
+  if (/^(key|code|token|pass)/.test(lower)) score -= 8;
+  if (lower.includes("created") || lower.includes("generated")) score -= 6;
   if (lower.includes("http") || lower.includes("www") || lower.includes("tme")) score -= 15;
   if (lower.includes("telegram")) score -= 8;
   if (lower.includes("start=")) score -= 6;
@@ -72,6 +74,7 @@ const extractKeyCandidates = (raw = "") => {
   if (!normalized) return [];
   const seen = new Map();
   const candidates = [];
+  const sanitizedParts = [];
 
   const register = (token, boost = 0) => {
     const sanitized = sanitizeToken(token);
@@ -99,6 +102,14 @@ const extractKeyCandidates = (raw = "") => {
     .map(part => part.trim())
     .filter(Boolean)
     .forEach(part => {
+      const sanitizedPart = sanitizeToken(part);
+      if (sanitizedPart) {
+        sanitizedParts.push({
+          value: sanitizedPart,
+          hasDigits: /\d/.test(sanitizedPart),
+          hasLetters: /[A-Za-z]/.test(sanitizedPart)
+        });
+      }
       const eqIndex = part.indexOf("=");
       if (eqIndex >= 0 && eqIndex < part.length - 1) {
         register(part.slice(eqIndex + 1), 5);
@@ -107,8 +118,31 @@ const extractKeyCandidates = (raw = "") => {
       pushMatches(part);
     });
 
+  for (let i = 0; i < sanitizedParts.length - 1; i++) {
+    const first = sanitizedParts[i];
+    const second = sanitizedParts[i + 1];
+    const joined = first.value + second.value;
+    if (joined.length >= 6 && (first.hasDigits || second.hasDigits)) {
+      register(joined, first.hasDigits && second.hasDigits ? 6 : 5);
+    }
+  }
+
+  for (let i = 0; i < sanitizedParts.length - 2; i++) {
+    const a = sanitizedParts[i];
+    const b = sanitizedParts[i + 1];
+    const c = sanitizedParts[i + 2];
+    const joined = a.value + b.value + c.value;
+    if (joined.length >= 8 && (a.hasDigits || b.hasDigits || c.hasDigits)) {
+      register(joined, 4);
+    }
+  }
+
   const collapsed = sanitizedCollapsed(normalized);
-  if (collapsed) register(collapsed, 3);
+  if (collapsed) {
+    const lowerCollapsed = collapsed.toLowerCase();
+    const startsWithMeta = /^(key|code|token|pass)/.test(lowerCollapsed);
+    register(collapsed, startsWithMeta ? -2 : 1);
+  }
 
   candidates.sort((a, b) => {
     if (b.score !== a.score) return b.score - a.score;
@@ -128,6 +162,8 @@ const state = {
   method: "usdt_trc20",
   methodAddr: ""
 };
+
+document.body.classList.add("is-gated");
 
 const i18n = {
   en: {
@@ -241,28 +277,65 @@ $("#g-activate").addEventListener("click", async ()=>{
   if(!key) return toast("Enter key");
   const tg_id = state.tg_id || Number(prompt("Enter Telegram ID (test):","1262317603"));
   const initData = TWA?.initData || null;
+  const payload = { key, rawKey, candidates, tg_id, name, email, initData };
   const r = await fetch("/api/activate",{
     method:"POST",
     headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({key, rawKey, tg_id, name, email, initData})
+    body:JSON.stringify(payload)
   }).then(r=>r.json());
   if(!r.ok){ toast(r.error || "Invalid key"); return; }
   state.user = r.user;
   localStorage.setItem("tg", r.user.tg_id);
-  openApp();
+  hydrateUser(r.user);
+  await openApp(r.user);
 });
 function toast(msg){ const el=$("#g-toast"); el.textContent=msg; setTimeout(()=> el.textContent="", 2500); }
 
+function showGate(){
+  if(state.feedTimer){ clearInterval(state.feedTimer); state.feedTimer = null; }
+  document.body.classList.add("is-gated");
+  $("#gate")?.classList.remove("hidden");
+  $("#app")?.classList.add("hidden");
+}
+
+function unlockGate(){
+  document.body.classList.remove("is-gated");
+  $("#gate")?.classList.add("hidden");
+  $("#app")?.classList.remove("hidden");
+}
+
 // App open
-async function openApp(){
-  $("#gate").classList.add("hidden");
-  $("#app").classList.remove("hidden");
-  await refreshUser();
+async function openApp(user = null, { auto = false } = {}){
+  if(user){
+    state.user = user;
+    hydrateUser(user);
+  }
+  if(!state.user?.tg_id){
+    if(!auto) toast("Please sign in again");
+    showGate();
+    return false;
+  }
+  if(!user){
+    try{
+      await refreshUser(true);
+    }catch(err){
+      console.warn("Failed to refresh session", err);
+      state.user = null;
+      localStorage.removeItem("tg");
+      showGate();
+      return false;
+    }
+  }
+  unlockGate();
   applyI18n();
+  if(user){
+    refreshUser();
+  }
   startFeed();
   refreshOps();
   refreshRequests();
   refreshMarkets();
+  return true;
 }
 
 // Tabs
@@ -363,15 +436,32 @@ $("#reqWithdraw").addEventListener("click", async ()=>{
 $("#whatsapp").onclick = ()=> window.open("https://wa.me/message/P6BBPSDL2CC4D1","_blank");
 
 // Data
-async function refreshUser(){
+function hydrateUser(user){
+  if(!user) return;
+  $("#balance").textContent = "$" + Number(user.balance || 0).toFixed(2);
+  $("#subLeft").textContent = user.sub_expires ? new Date(user.sub_expires).toLocaleDateString() : "—";
+}
+
+async function refreshUser(required = false){
   const tg = state.user?.tg_id || Number(localStorage.getItem("tg"));
-  if(!tg) return;
-  const r = await fetch(`/api/user/${tg}`).then(r=>r.json());
-  if(r.ok){
-    state.user = r.user;
-    $("#balance").textContent = "$"+Number(r.user.balance||0).toFixed(2);
-    $("#subLeft").textContent = r.user.sub_expires ? new Date(r.user.sub_expires).toLocaleDateString() : "—";
+  if(!tg){
+    if(required) throw new Error("missing_tg");
+    return false;
   }
+  let payload = null;
+  try{
+    payload = await fetch(`/api/user/${tg}`).then(r=>r.json());
+  }catch(err){
+    if(required) throw err;
+    return false;
+  }
+  if(payload?.ok){
+    state.user = payload.user;
+    hydrateUser(payload.user);
+    return true;
+  }
+  if(required) throw new Error(payload?.error || "user_not_found");
+  return false;
 }
 
 async function refreshOps(){
@@ -529,8 +619,10 @@ function notify(msg){
   // إذا عنده TG محفوظ، جرّب تفتح مباشرة
   const old = localStorage.getItem("tg");
   if(old){
-    // افتح المحفظة مباشرة
     state.user = { tg_id: Number(old) };
-    openApp();
+    const opened = await openApp(null, { auto: true });
+    if(!opened) showGate();
+  }else{
+    showGate();
   }
 })();

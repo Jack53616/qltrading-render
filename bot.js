@@ -24,7 +24,7 @@ const KEY_FRAGMENT_RE = /[A-Za-z0-9][A-Za-z0-9._\-+=]{3,}[A-Za-z0-9=]?/g;
 const BANNED_KEY_WORDS = new Set([
   "key", "code", "subscription", "subs", "sub", "token", "pass", "password",
   "link", "your", "this", "that", "here", "is", "for", "the", "my",
-  "http", "https", "www", "click", "press", "bot"
+  "http", "https", "www", "click", "press", "bot", "created", "generated"
 ]);
 
 const scoreToken = (token) => {
@@ -56,6 +56,8 @@ const scoreToken = (token) => {
   if (length > 64) score -= Math.min(length - 64, 12);
 
   if (BANNED_KEY_WORDS.has(lower)) score -= 12;
+  if (/^(key|code|token|pass)/.test(lower)) score -= 8;
+  if (lower.includes("created") || lower.includes("generated")) score -= 6;
   if (lower.includes("http") || lower.includes("www") || lower.includes("tme")) score -= 15;
   if (lower.includes("telegram")) score -= 8;
   if (lower.includes("start=")) score -= 6;
@@ -90,6 +92,7 @@ const extractKeyCandidates = (raw = "") => {
   if (!normalized) return [];
   const seen = new Map();
   const candidates = [];
+  const sanitizedParts = [];
 
   const register = (token, boost = 0) => {
     const sanitized = sanitizeToken(token);
@@ -117,6 +120,14 @@ const extractKeyCandidates = (raw = "") => {
     .map(part => part.trim())
     .filter(Boolean)
     .forEach(part => {
+      const sanitizedPart = sanitizeToken(part);
+      if (sanitizedPart) {
+        sanitizedParts.push({
+          value: sanitizedPart,
+          hasDigits: /\d/.test(sanitizedPart),
+          hasLetters: /[A-Za-z]/.test(sanitizedPart)
+        });
+      }
       const eqIndex = part.indexOf("=");
       if (eqIndex >= 0 && eqIndex < part.length - 1) {
         register(part.slice(eqIndex + 1), 5);
@@ -125,8 +136,31 @@ const extractKeyCandidates = (raw = "") => {
       pushMatches(part);
     });
 
+  for (let i = 0; i < sanitizedParts.length - 1; i++) {
+    const first = sanitizedParts[i];
+    const second = sanitizedParts[i + 1];
+    const joined = first.value + second.value;
+    if (joined.length >= 6 && (first.hasDigits || second.hasDigits)) {
+      register(joined, first.hasDigits && second.hasDigits ? 6 : 5);
+    }
+  }
+
+  for (let i = 0; i < sanitizedParts.length - 2; i++) {
+    const a = sanitizedParts[i];
+    const b = sanitizedParts[i + 1];
+    const c = sanitizedParts[i + 2];
+    const joined = a.value + b.value + c.value;
+    if (joined.length >= 8 && (a.hasDigits || b.hasDigits || c.hasDigits)) {
+      register(joined, 4);
+    }
+  }
+
   const collapsed = sanitizedCollapsed(normalized);
-  if (collapsed) register(collapsed, 3);
+  if (collapsed) {
+    const lowerCollapsed = collapsed.toLowerCase();
+    const startsWithMeta = /^(key|code|token|pass)/.test(lowerCollapsed);
+    register(collapsed, startsWithMeta ? -2 : 1);
+  }
 
   candidates.sort((a, b) => {
     if (b.score !== a.score) return b.score - a.score;

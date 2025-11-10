@@ -20,6 +20,23 @@ body{
   -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale;
 }
 
+body.is-gated{
+  overflow:hidden;
+}
+
+body.is-gated #app{
+  display:none !important;
+}
+
+body.is-gated #gate{
+  opacity:1;
+  pointer-events:auto;
+}
+
+body:not(.is-gated) #gate{
+  pointer-events:none;
+}
+
 .hidden{display:none}
 
 .splash{
