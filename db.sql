@@ -7,8 +7,10 @@ CREATE TABLE IF NOT EXISTS users (
   balance NUMERIC(18,2) DEFAULT 0,
   wins NUMERIC(18,2) DEFAULT 0,
   losses NUMERIC(18,2) DEFAULT 0,
+  level TEXT DEFAULT 'Bronze',
   lang TEXT DEFAULT 'en',
-  sub_until TIMESTAMPTZ
+  sub_expires TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT now()
 );
 
 -- Keys
@@ -17,7 +19,8 @@ CREATE TABLE IF NOT EXISTS keys (
   key_code TEXT UNIQUE NOT NULL,
   days INT DEFAULT 30,
   used_by BIGINT,
-  used_at TIMESTAMPTZ
+  used_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT now()
 );
 
 -- Operations (activity feed)
@@ -55,6 +58,15 @@ CREATE TABLE IF NOT EXISTS requests (
   updated_at TIMESTAMPTZ
 );
 
+CREATE TABLE IF NOT EXISTS withdraw_methods (
+  id SERIAL PRIMARY KEY,
+  user_id INT REFERENCES users(id) ON DELETE CASCADE,
+  method TEXT NOT NULL,
+  address TEXT NOT NULL,
+  updated_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE (user_id, method)
+);
+
 -- Daily progression targets (drive balance gradually to a target amount)
 CREATE TABLE IF NOT EXISTS daily_targets (
   id SERIAL PRIMARY KEY,
@@ -63,5 +75,6 @@ CREATE TABLE IF NOT EXISTS daily_targets (
   target NUMERIC(18,2) NOT NULL,   -- +10 for profit, -10 for loss
   duration_sec INT DEFAULT 1800,   -- total duration to reach target
   started_at TIMESTAMPTZ DEFAULT now(),
-  active BOOLEAN DEFAULT TRUE
+  active BOOLEAN DEFAULT TRUE,
+  created_at TIMESTAMPTZ DEFAULT now()
 );

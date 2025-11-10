@@ -36,10 +36,21 @@ body{
 
 .gate{
   position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
+  z-index:50;
+  overflow:hidden;
+}
+.gate::before{
+  content:"";
+  position:absolute;
+  inset:0;
+  background:radial-gradient(circle at 50% 30%, #1d1448aa 0%, #0b0916ee 60%, #05040c 100%);
+  z-index:0;
 }
 .gate .bg{
   position:absolute; inset:0; width:100%; height:100%; object-fit:cover; filter:blur(6px) brightness(.5);
+  z-index:-1;
 }
+.gate .glass{position:relative; z-index:1;}
 .card.glass{
   background:var(--glass);
   border:1px solid #ffffff1a;
