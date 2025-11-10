@@ -1,5 +1,157 @@
 // QL Trading AI v2.1 — Frontend logic
 const TWA = window.Telegram?.WebApp;
+const INVISIBLE_CHARS = /[\u0000-\u001F\u007F-\u009F\u200B-\u200F\u202A-\u202E\u2066-\u2069]/g;
+const VALID_KEY_CHARS = /^[A-Za-z0-9._\-+=]+$/;
+const KEY_FRAGMENT_RE = /[A-Za-z0-9][A-Za-z0-9._\-+=]{3,}[A-Za-z0-9=]?/g;
+const BANNED_KEY_WORDS = new Set([
+  "key", "code", "subscription", "subs", "sub", "token", "pass", "password",
+  "link", "your", "this", "that", "here", "is", "for", "the", "my",
+  "http", "https", "www", "click", "press", "bot", "created", "generated"
+]);
+
+const scoreToken = (token) => {
+  const lower = token.toLowerCase();
+  const length = token.length;
+  const digitCount = (token.match(/\d/g) || []).length;
+  const letterCount = (token.match(/[A-Za-z]/g) || []).length;
+
+  let score = 0;
+  if (digitCount) score += 6;
+  if (/[-_]/.test(token)) score += 2;
+  if (/[+=]/.test(token)) score += 1;
+  if (digitCount && letterCount) score += 2;
+  if (length >= 28) score += 6;
+  else if (length >= 20) score += 5;
+  else if (length >= 16) score += 4;
+  else if (length >= 12) score += 3;
+  else if (length >= 8) score += 2;
+  else if (length >= 6) score += 1;
+
+  const digitRatio = length ? digitCount / length : 0;
+  if (digitRatio >= 0.5) score += 4;
+  else if (digitRatio >= 0.35) score += 2;
+
+  const upperCount = (token.match(/[A-Z]/g) || []).length;
+  if (upperCount >= 4 && letterCount) score += 1;
+
+  if (length > 32) score -= Math.min(length - 32, 12);
+  if (length > 64) score -= Math.min(length - 64, 12);
+
+  if (BANNED_KEY_WORDS.has(lower)) score -= 12;
+  if (/^(key|code|token|pass)/.test(lower)) score -= 8;
+  if (lower.includes("created") || lower.includes("generated")) score -= 6;
+  if (lower.includes("http") || lower.includes("www") || lower.includes("tme")) score -= 15;
+  if (lower.includes("telegram")) score -= 8;
+  if (lower.includes("start=")) score -= 6;
+
+  return score;
+};
+
+const sanitizeToken = (candidate = "") => {
+  if (!candidate) return "";
+  let token = candidate
+    .replace(INVISIBLE_CHARS, "")
+    .trim();
+  if (!token) return "";
+  token = token.replace(/^[^A-Za-z0-9]+/, "").replace(/[^A-Za-z0-9=]+$/, "");
+  if (!token) return "";
+  if (!VALID_KEY_CHARS.test(token)) {
+    token = token.replace(/[^A-Za-z0-9._\-+=]+/g, "");
+  }
+  if (token.length < 4) return "";
+  return token;
+};
+
+const sanitizedCollapsed = (text = "") => {
+  if (!text) return "";
+  const collapsed = text.replace(/[^A-Za-z0-9._\-+=]+/g, "");
+  return collapsed.length >= 4 ? collapsed : "";
+};
+
+const extractKeyCandidates = (raw = "") => {
+  if (!raw) return [];
+  const normalized = raw.normalize("NFKC").replace(INVISIBLE_CHARS, " ").trim();
+  if (!normalized) return [];
+  const seen = new Map();
+  const candidates = [];
+  const sanitizedParts = [];
+
+  const register = (token, boost = 0) => {
+    const sanitized = sanitizeToken(token);
+    if (!sanitized) return;
+    const key = sanitized.toLowerCase();
+    if (seen.has(key)) return;
+    const score = scoreToken(sanitized) + boost;
+    seen.set(key, score);
+    candidates.push({ token: sanitized, score, idx: candidates.length });
+  };
+
+  const pushMatches = (text, boost = 0) => {
+    if (!text) return;
+    const matches = text.match(KEY_FRAGMENT_RE);
+    if (matches) matches.forEach(match => register(match, boost));
+  };
+
+  pushMatches(normalized, 1);
+
+  const startMatch = normalized.match(/start=([A-Za-z0-9._\-+=]+)/i);
+  if (startMatch) register(startMatch[1], 6);
+
+  normalized
+    .split(/[\s|,;:/\\]+/)
+    .map(part => part.trim())
+    .filter(Boolean)
+    .forEach(part => {
+      const sanitizedPart = sanitizeToken(part);
+      if (sanitizedPart) {
+        sanitizedParts.push({
+          value: sanitizedPart,
+          hasDigits: /\d/.test(sanitizedPart),
+          hasLetters: /[A-Za-z]/.test(sanitizedPart)
+        });
+      }
+      const eqIndex = part.indexOf("=");
+      if (eqIndex >= 0 && eqIndex < part.length - 1) {
+        register(part.slice(eqIndex + 1), 5);
+      }
+      register(part);
+      pushMatches(part);
+    });
+
+  for (let i = 0; i < sanitizedParts.length - 1; i++) {
+    const first = sanitizedParts[i];
+    const second = sanitizedParts[i + 1];
+    const joined = first.value + second.value;
+    if (joined.length >= 6 && (first.hasDigits || second.hasDigits)) {
+      register(joined, first.hasDigits && second.hasDigits ? 6 : 5);
+    }
+  }
+
+  for (let i = 0; i < sanitizedParts.length - 2; i++) {
+    const a = sanitizedParts[i];
+    const b = sanitizedParts[i + 1];
+    const c = sanitizedParts[i + 2];
+    const joined = a.value + b.value + c.value;
+    if (joined.length >= 8 && (a.hasDigits || b.hasDigits || c.hasDigits)) {
+      register(joined, 4);
+    }
+  }
+
+  const collapsed = sanitizedCollapsed(normalized);
+  if (collapsed) {
+    const lowerCollapsed = collapsed.toLowerCase();
+    const startsWithMeta = /^(key|code|token|pass)/.test(lowerCollapsed);
+    register(collapsed, startsWithMeta ? -2 : 1);
+  }
+
+  candidates.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    if (b.token.length !== a.token.length) return b.token.length - a.token.length;
+    return a.idx - b.idx;
+  });
+
+  return candidates.map(c => c.token);
+};
 const state = {
   tg_id: null,
   token: null,
@@ -10,6 +162,8 @@ const state = {
   method: "usdt_trc20",
   methodAddr: ""
 };
+
+document.body.classList.add("is-gated");
 
 const i18n = {
   en: {
@@ -95,6 +249,8 @@ const $$ = (q)=>document.querySelectorAll(q);
 // Splash fade then gate
 setTimeout(()=> { $("#splash")?.classList.add("hidden"); }, 1800);
 
+const cleanKeyInput = (value = "") => extractKeyCandidates(value)[0] || "";
+
 // Setup TG id
 function detectTG(){
   try{
@@ -112,30 +268,100 @@ async function getToken(){
 }
 
 // Activate
-$("#g-activate").addEventListener("click", async ()=>{
-  const key = $("#g-key").value.trim();
+const gateBtn = $("#g-activate");
+gateBtn?.addEventListener("click", async ()=>{
+  if(gateBtn.disabled) return;
+  const rawKey = $("#g-key").value || "";
+  const candidates = extractKeyCandidates(rawKey);
+  const key = candidates[0] || cleanKeyInput(rawKey);
   const name = $("#g-name").value.trim();
   const email = $("#g-email").value.trim();
   if(!key) return toast("Enter key");
   const tg_id = state.tg_id || Number(prompt("Enter Telegram ID (test):","1262317603"));
-  const r = await fetch("/api/activate",{method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({key,tg_id,name,email})}).then(r=>r.json());
-  if(!r.ok){ toast("Invalid key"); return; }
-  state.user = r.user;
-  localStorage.setItem("tg", r.user.tg_id);
-  openApp();
+  if(!tg_id){ toast("Missing Telegram ID"); return; }
+  const initData = TWA?.initData || null;
+  const payload = { key, rawKey, candidates, tg_id, name, email, initData };
+
+  const restore = gateBtn.textContent;
+  gateBtn.disabled = true;
+  gateBtn.textContent = "...";
+
+  try{
+    const r = await fetch("/api/activate",{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify(payload)
+    }).then(r=>r.json());
+    if(!r?.ok){
+      toast(r?.error || "Invalid key");
+      return;
+    }
+    state.user = r.user;
+    localStorage.setItem("tg", r.user.tg_id);
+    hydrateUser(r.user);
+    unlockGate();
+    $("#g-key").value = "";
+    if(r.reused){ notify("🔓 Session restored"); }
+    const opened = await openApp(r.user);
+    if(!opened){
+      showGate();
+      toast("Unable to open wallet");
+    }
+  }catch(err){
+    console.error("Activation failed", err);
+    toast("Connection error");
+  }finally{
+    gateBtn.disabled = false;
+    gateBtn.textContent = restore;
+  }
 });
 function toast(msg){ const el=$("#g-toast"); el.textContent=msg; setTimeout(()=> el.textContent="", 2500); }
 
+function showGate(){
+  if(state.feedTimer){ clearInterval(state.feedTimer); state.feedTimer = null; }
+  document.body.classList.add("is-gated");
+  $("#gate")?.classList.remove("hidden");
+  $("#app")?.classList.add("hidden");
+}
+
+function unlockGate(){
+  document.body.classList.remove("is-gated");
+  $("#gate")?.classList.add("hidden");
+  $("#app")?.classList.remove("hidden");
+}
+
 // App open
-async function openApp(){
-  $("#gate").classList.add("hidden");
-  $("#app").classList.remove("hidden");
-  await refreshUser();
+async function openApp(user = null, { auto = false } = {}){
+  if(user){
+    state.user = user;
+    hydrateUser(user);
+  }
+  if(!state.user?.tg_id){
+    if(!auto) toast("Please sign in again");
+    showGate();
+    return false;
+  }
+  if(!user){
+    try{
+      await refreshUser(true);
+    }catch(err){
+      console.warn("Failed to refresh session", err);
+      state.user = null;
+      localStorage.removeItem("tg");
+      showGate();
+      return false;
+    }
+  }
+  unlockGate();
   applyI18n();
+  if(user){
+    refreshUser();
+  }
   startFeed();
   refreshOps();
   refreshRequests();
   refreshMarkets();
+  return true;
 }
 
 // Tabs
@@ -206,9 +432,13 @@ function renderMethod(){
     <button id="saveAddr" class="btn">Save</button>
   `;
   $("#saveAddr").onclick = async ()=>{
-    const addr = $("#addr").value.trim();
+    const address = $("#addr").value.trim();
     const tg = state.user?.tg_id || Number(localStorage.getItem("tg"));
-    await fetch("/api/withdraw/method",{method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({tg_id:tg, method:state.method, addr})});
+    await fetch("/api/withdraw/method",{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({tg_id:tg, method:state.method, address})
+    });
     notify("✅ Address saved");
   }
 }
@@ -218,7 +448,11 @@ $("#reqWithdraw").addEventListener("click", async ()=>{
   const tg = state.user?.tg_id || Number(localStorage.getItem("tg"));
   const amount = Number($("#amount").value || 0);
   if(amount<=0) return notify("Enter amount");
-  const r = await fetch("/api/withdraw",{method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({tg_id:tg, amount, method: state.method})}).then(r=>r.json());
+  const r = await fetch("/api/withdraw",{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({tg_id:tg, amount, method: state.method})
+  }).then(r=>r.json());
   if(!r.ok) return notify("❌ "+(r.error||"Error"));
   notify("✅ Request sent");
   refreshUser(); refreshRequests();
@@ -228,15 +462,32 @@ $("#reqWithdraw").addEventListener("click", async ()=>{
 $("#whatsapp").onclick = ()=> window.open("https://wa.me/message/P6BBPSDL2CC4D1","_blank");
 
 // Data
-async function refreshUser(){
+function hydrateUser(user){
+  if(!user) return;
+  $("#balance").textContent = "$" + Number(user.balance || 0).toFixed(2);
+  $("#subLeft").textContent = user.sub_expires ? new Date(user.sub_expires).toLocaleDateString() : "—";
+}
+
+async function refreshUser(required = false){
   const tg = state.user?.tg_id || Number(localStorage.getItem("tg"));
-  if(!tg) return;
-  const r = await fetch(`/api/user/${tg}`).then(r=>r.json());
-  if(r.ok){
-    state.user = r.user;
-    $("#balance").textContent = "$"+Number(r.user.balance||0).toFixed(2);
-    $("#subLeft").textContent = r.user.sub_expires ? new Date(r.user.sub_expires).toLocaleDateString() : "—";
+  if(!tg){
+    if(required) throw new Error("missing_tg");
+    return false;
   }
+  let payload = null;
+  try{
+    payload = await fetch(`/api/user/${tg}`).then(r=>r.json());
+  }catch(err){
+    if(required) throw err;
+    return false;
+  }
+  if(payload?.ok){
+    state.user = payload.user;
+    hydrateUser(payload.user);
+    return true;
+  }
+  if(required) throw new Error(payload?.error || "user_not_found");
+  return false;
 }
 
 async function refreshOps(){
@@ -394,8 +645,10 @@ function notify(msg){
   // إذا عنده TG محفوظ، جرّب تفتح مباشرة
   const old = localStorage.getItem("tg");
   if(old){
-    // افتح المحفظة مباشرة
     state.user = { tg_id: Number(old) };
-    openApp();
+    const opened = await openApp(null, { auto: true });
+    if(!opened) showGate();
+  }else{
+    showGate();
   }
 })();
