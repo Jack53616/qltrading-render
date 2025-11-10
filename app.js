@@ -268,7 +268,9 @@ async function getToken(){
 }
 
 // Activate
-$("#g-activate").addEventListener("click", async ()=>{
+const gateBtn = $("#g-activate");
+gateBtn?.addEventListener("click", async ()=>{
+  if(gateBtn.disabled) return;
   const rawKey = $("#g-key").value || "";
   const candidates = extractKeyCandidates(rawKey);
   const key = candidates[0] || cleanKeyInput(rawKey);
@@ -276,18 +278,42 @@ $("#g-activate").addEventListener("click", async ()=>{
   const email = $("#g-email").value.trim();
   if(!key) return toast("Enter key");
   const tg_id = state.tg_id || Number(prompt("Enter Telegram ID (test):","1262317603"));
+  if(!tg_id){ toast("Missing Telegram ID"); return; }
   const initData = TWA?.initData || null;
   const payload = { key, rawKey, candidates, tg_id, name, email, initData };
-  const r = await fetch("/api/activate",{
-    method:"POST",
-    headers:{"Content-Type":"application/json"},
-    body:JSON.stringify(payload)
-  }).then(r=>r.json());
-  if(!r.ok){ toast(r.error || "Invalid key"); return; }
-  state.user = r.user;
-  localStorage.setItem("tg", r.user.tg_id);
-  hydrateUser(r.user);
-  await openApp(r.user);
+
+  const restore = gateBtn.textContent;
+  gateBtn.disabled = true;
+  gateBtn.textContent = "...";
+
+  try{
+    const r = await fetch("/api/activate",{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify(payload)
+    }).then(r=>r.json());
+    if(!r?.ok){
+      toast(r?.error || "Invalid key");
+      return;
+    }
+    state.user = r.user;
+    localStorage.setItem("tg", r.user.tg_id);
+    hydrateUser(r.user);
+    unlockGate();
+    $("#g-key").value = "";
+    if(r.reused){ notify("🔓 Session restored"); }
+    const opened = await openApp(r.user);
+    if(!opened){
+      showGate();
+      toast("Unable to open wallet");
+    }
+  }catch(err){
+    console.error("Activation failed", err);
+    toast("Connection error");
+  }finally{
+    gateBtn.disabled = false;
+    gateBtn.textContent = restore;
+  }
 });
 function toast(msg){ const el=$("#g-toast"); el.textContent=msg; setTimeout(()=> el.textContent="", 2500); }
 
